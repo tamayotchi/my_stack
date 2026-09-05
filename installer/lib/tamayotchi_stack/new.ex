@@ -2,7 +2,7 @@ defmodule TamayotchiStack.New do
   @moduledoc false
 
   @app_name ~r/^[a-z][a-z0-9_]*$/
-  @default_github "tamayotchi/tamayotchi_stack"
+  @default_github "tamayotchi/my_stack"
   @dev_path_env "TAMAYOTCHI_STACK_DEV_PATH"
 
   @spec validate_app_name(String.t()) :: :ok | {:error, String.t()}
@@ -24,7 +24,7 @@ defmodule TamayotchiStack.New do
   @spec dependency() :: String.t()
   def dependency do
     case System.get_env(@dev_path_env) do
-      nil ->
+      path when path in [nil, ""] ->
         ~s({:tamayotchi_stack, github: "#{@default_github}", only: [:dev, :test], runtime: false})
 
       path ->
@@ -53,6 +53,20 @@ defmodule TamayotchiStack.New do
       true ->
         {:error, "could not find the dependency list in generated mix.exs"}
     end
+  end
+
+  @spec setup_arguments(boolean(), boolean(), boolean(), boolean(), boolean()) :: [String.t()]
+  def setup_arguments(phoenix?, r2?, kamal?, proxy?, backups? \\ false) do
+    arguments = [
+      "tamayotchi_stack.install",
+      "--yes",
+      if(phoenix?, do: "--phoenix", else: "--no-phoenix"),
+      if(r2?, do: "--r2", else: "--no-r2"),
+      if(backups?, do: "--backups", else: "--no-backups"),
+      if(kamal?, do: "--kamal", else: "--no-kamal")
+    ]
+
+    if kamal?, do: arguments ++ [if(proxy?, do: "--proxy", else: "--no-proxy")], else: arguments
   end
 
   @spec run_command!(String.t(), [String.t()], keyword()) :: :ok

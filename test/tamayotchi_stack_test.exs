@@ -18,12 +18,7 @@ defmodule TamayotchiStackTest do
   end
 
   test "configures app-owned GoatCounter files in a Phoenix project" do
-    igniter =
-      phoenix_project()
-      |> Setup.configure(
-        phoenix: true,
-        goatcounter_endpoint: "https://sample.goatcounter.com/count"
-      )
+    igniter = phoenix_project() |> Setup.configure(phoenix: true)
 
     assert content(igniter, "assets/js/app.js") =~ ~s(import "./goatcounter";)
 
@@ -47,12 +42,7 @@ defmodule TamayotchiStackTest do
   test "configures Kamal from application conventions" do
     igniter =
       phoenix_project()
-      |> Setup.configure(
-        phoenix: true,
-        goatcounter_endpoint: "https://sample.goatcounter.com/count",
-        kamal: true,
-        kamal_proxy: true
-      )
+      |> Setup.configure(phoenix: true, kamal: true, kamal_proxy: true)
 
     deploy = content(igniter, "config/deploy.yml")
     assert deploy =~ "service: sample"
@@ -76,15 +66,68 @@ defmodule TamayotchiStackTest do
     assert manifest[:features][:kamal] == [proxy: true]
   end
 
+  test "R2 integrates with Kamal only when selected" do
+    enabled =
+      phoenix_project()
+      |> Setup.configure(phoenix: true, r2: true, kamal: true, kamal_proxy: true)
+
+    assert Igniter.prepare_for_write(enabled).issues == []
+    assert content(enabled, "config/deploy.yml") =~ "R2_BUCKET: sample"
+    assert content(enabled, "config/deploy.yml") =~ "- R2_SECRET_ACCESS_KEY"
+
+    assert content(enabled, ".kamal/secrets") =~
+             "$(kamal secrets extract R2_ACCESS_KEY_ID $SECRETS)"
+
+    assert content(enabled, "Dockerfile") =~ "COPY config/runtime.exs config/"
+    refute Igniter.changed?(enabled |> materialized_project() |> Sync.run())
+
+    disabled = phoenix_project() |> Setup.configure(phoenix: true, kamal: true, kamal_proxy: true)
+    refute content(disabled, "config/deploy.yml") =~ "R2_"
+    refute content(disabled, ".kamal/secrets") =~ "R2_"
+  end
+
+  test "R2 preserves customized Kamal values and secret references" do
+    initial =
+      phoenix_project()
+      |> Setup.configure(phoenix: true, kamal: true, kamal_proxy: true)
+      |> Igniter.update_file("config/deploy.yml", fn source ->
+        text = Rewrite.Source.get(source, :content)
+
+        text =
+          String.replace(
+            text,
+            "PORT: 4000",
+            "PORT: 4000\n    R2_BUCKET: custom-bucket\n    CUSTOM_ENV: custom"
+          )
+
+        Rewrite.Source.update(source, :content, text)
+      end)
+      |> Igniter.update_file(".kamal/secrets", fn source ->
+        text = Rewrite.Source.get(source, :content)
+        Rewrite.Source.update(source, :content, text <> "# custom provider comment\n")
+      end)
+      |> materialized_project()
+
+    enabled = Setup.configure(initial, phoenix: true, r2: true, kamal: true, kamal_proxy: true)
+    assert Igniter.prepare_for_write(enabled).issues == []
+    assert content(enabled, "config/deploy.yml") =~ "R2_BUCKET: custom-bucket"
+    assert content(enabled, "config/deploy.yml") =~ "CUSTOM_ENV: custom"
+    assert content(enabled, ".kamal/secrets") =~ "# custom provider comment"
+    refute Igniter.changed?(enabled |> materialized_project() |> Sync.run())
+
+    disabled =
+      enabled
+      |> materialized_project()
+      |> Setup.configure(phoenix: true, r2: false, kamal: true, kamal_proxy: true)
+
+    assert content(disabled, "config/deploy.yml") =~ "R2_ACCESS_KEY_ID"
+    assert content(disabled, ".kamal/secrets") =~ "R2_ACCESS_KEY_ID"
+  end
+
   test "can deploy without kamal-proxy or a database" do
     igniter =
       no_ecto_phoenix_project()
-      |> Setup.configure(
-        phoenix: true,
-        goatcounter_endpoint: "https://sample.goatcounter.com/count",
-        kamal: true,
-        kamal_proxy: false
-      )
+      |> Setup.configure(phoenix: true, kamal: true, kamal_proxy: false)
 
     deploy = content(igniter, "config/deploy.yml")
     assert deploy =~ "proxy: false"
@@ -103,12 +146,7 @@ defmodule TamayotchiStackTest do
   end
 
   test "Kamal configuration and sync are idempotent" do
-    options = [
-      phoenix: true,
-      goatcounter_endpoint: "https://sample.goatcounter.com/count",
-      kamal: true,
-      kamal_proxy: true
-    ]
+    options = [phoenix: true, kamal: true, kamal_proxy: true]
 
     first_pass = phoenix_project() |> Setup.configure(options)
     materialized = materialized_project(first_pass)
@@ -123,7 +161,10 @@ defmodule TamayotchiStackTest do
 
   test "does not overwrite an unmanaged Dockerfile" do
     igniter =
-      phoenix_project(%{"Dockerfile" => "FROM custom/image\n"})
+      phoenix_project(%{
+        "Dockerfile" =>
+          "FROM custom/image\n# Managed by tamayotchi_stack. is only a comment here\n"
+      })
       |> Kamal.configure(:sample, true, proxy: true)
 
     assert Enum.any?(
@@ -133,7 +174,7 @@ defmodule TamayotchiStackTest do
   end
 
   test "configuration is idempotent" do
-    options = [phoenix: true, goatcounter_endpoint: "https://sample.goatcounter.com/count"]
+    options = [phoenix: true]
     first_pass = phoenix_project() |> Setup.configure(options)
 
     second_pass =
@@ -148,10 +189,12 @@ defmodule TamayotchiStackTest do
   test "sync normalizes a managed endpoint from the application name" do
     igniter =
       phoenix_project()
-      |> Setup.configure(
-        phoenix: true,
-        goatcounter_endpoint: "https://old.goatcounter.com/count"
-      )
+      |> Setup.configure(phoenix: true)
+      |> Igniter.update_file("assets/js/goatcounter.js", fn source ->
+        contents = Rewrite.Source.get(source, :content)
+        updated = String.replace(contents, "https://sample.", "https://old.")
+        Rewrite.Source.update(source, :content, updated)
+      end)
       |> materialized_project()
 
     updated = Sync.run(igniter)
@@ -168,10 +211,7 @@ defmodule TamayotchiStackTest do
       phoenix_project(%{
         "assets/js/goatcounter.js" => "console.log('custom analytics')\n"
       })
-      |> Setup.configure(
-        phoenix: true,
-        goatcounter_endpoint: "https://sample.goatcounter.com/count"
-      )
+      |> Setup.configure(phoenix: true)
 
     assert Enum.any?(
              Igniter.prepare_for_write(igniter).issues,
@@ -193,52 +233,63 @@ defmodule TamayotchiStackTest do
     refute Igniter.exists?(igniter, "assets/vendor/goatcounter.js")
   end
 
-  test "Phoenix automatically enables GoatCounter and defaults to Kamal" do
+  test "setup keeps GoatCounter implicit and defaults to Kamal" do
     resolved = phoenix_project() |> SetupOptions.resolve(phoenix: true, yes: true)
 
     assert resolved[:phoenix]
-    assert resolved[:goatcounter_endpoint] == "https://sample.goatcounter.com/count"
+    refute Keyword.has_key?(resolved, :goatcounter)
+    refute Keyword.has_key?(resolved, :goatcounter_endpoint)
     assert resolved[:kamal]
     assert resolved[:kamal_proxy]
   end
 
-  test "setup normalizes an existing managed endpoint from the application name" do
+  test "setup preserves the proxy choice from an existing Kamal configuration" do
     igniter =
-      phoenix_project()
-      |> Setup.configure(
-        phoenix: true,
-        goatcounter_endpoint: "https://existing.goatcounter.com/count"
-      )
+      no_ecto_phoenix_project()
+      |> Setup.configure(phoenix: true, kamal: true, kamal_proxy: false)
       |> materialized_project()
 
     resolved = SetupOptions.resolve(igniter, yes: true)
 
     assert resolved[:phoenix]
-    assert resolved[:goatcounter_endpoint] == "https://sample.goatcounter.com/count"
+    assert resolved[:kamal]
+    refute resolved[:kamal_proxy]
   end
 
   test "doctor health follows desired state" do
-    assert Doctor.healthy?(%{
-             manifest: :ok,
-             managed_phoenix: true,
-             phoenix: true,
-             goatcounter: true,
-             goatcounter_endpoint: "https://sample.goatcounter.com/count",
-             expected_goatcounter_endpoint: "https://sample.goatcounter.com/count"
-           })
+    report = %{
+      manifest: :ok,
+      managed_phoenix: true,
+      phoenix: true,
+      goatcounter: true,
+      goatcounter_endpoint: "https://sample.goatcounter.com/count",
+      expected_goatcounter_endpoint: "https://sample.goatcounter.com/count",
+      managed_kamal: true,
+      kamal: true,
+      kamal_proxy: true,
+      expected_kamal_proxy: true
+    }
 
-    refute Doctor.healthy?(%{
-             manifest: :ok,
-             managed_phoenix: true,
-             phoenix: true,
-             goatcounter: false,
-             goatcounter_endpoint: nil,
-             expected_goatcounter_endpoint: "https://sample.goatcounter.com/count"
-           })
+    assert Doctor.healthy?(report)
+    refute Doctor.healthy?(%{report | goatcounter: false, goatcounter_endpoint: nil})
+    refute Doctor.healthy?(%{report | kamal: false})
+    refute Doctor.healthy?(%{report | kamal_proxy: false})
+    refute Doctor.healthy?(Map.merge(report, %{managed_r2: true, r2: false}))
+    assert Doctor.healthy?(Map.merge(report, %{managed_r2: true, r2: true}))
   end
 
-  test "manifest parser rejects executable configuration" do
+  test "manifest parser rejects executable and invalid feature configuration" do
     assert {:error, _reason} = Manifest.parse("System.cmd(\"echo\", [\"unsafe\"])\n")
+
+    assert {:error, reason} =
+             Manifest.parse("[schema: 1, app: :sample, features: [kamal: true]]\n")
+
+    assert reason =~ "Kamal configuration"
+
+    assert {:error, reason} =
+             Manifest.parse("[schema: 1, app: :sample, features: [phoenix: false]]\n")
+
+    assert reason =~ "Phoenix configuration"
   end
 
   defp phoenix_project(extra_files \\ %{}) do

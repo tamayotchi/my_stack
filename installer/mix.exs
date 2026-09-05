@@ -2,7 +2,7 @@ defmodule TamayotchiStack.New.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/tamayotchi/tamayotchi_stack"
+  @source_url "https://github.com/tamayotchi/my_stack"
 
   def project do
     [

@@ -11,7 +11,9 @@ Implemented in the first vertical slice:
 - app-owned GoatCounter integration derived from the application name
 - app-owned Kamal deployment with optional `kamal-proxy`
 
-Oban and R2 remain planned work described below.
+R2 is also implemented as optional app-owned storage, following Prezio's
+put/delete behaviour and adapter pattern. Optional SQLite backups based on
+Robert's Litestream/Supercronic setup are also implemented. Oban remains planned work.
 
 This document defines a reusable Phoenix application starter built with
 [Igniter](https://hexdocs.pm/igniter). It is intended to preserve the decisions
@@ -401,19 +403,20 @@ Catalog feature. Proposed generated modules:
 ```text
 lib/my_app/storage.ex
 lib/my_app/storage/r2.ex
-test/support/storage/fake.ex
+lib/my_app/storage/fake.ex
 ```
 
-The initial storage contract should support at least:
+The implemented initial storage contract supports `put_object/1` and
+`delete_object/1`, returning `:ok | {:error, reason}`, matching Prezio. `Storage`
+also dispatches to the configured adapter, so callers remain provider-independent.
+Get, list, signed URLs, metadata, and public URL construction are not generated.
+The fake lives in `lib/` so it is available in development as well as tests;
+its call history and injected results are process-local for async test isolation.
+It is non-persistent and does not serve uploaded objects.
 
-```text
-put_object
-get_object (decision still required)
-delete_object
-```
-
-Prezio currently demonstrates put and delete. Whether get, list, signed URLs,
-and metadata belong in version one remains an open decision.
+R2 is opt-in via the wizard or `--r2`; `--yes` does not enable it by default.
+`--no-r2` stops management of an existing installation, without uninstalling it.
+Sync preserves app-owned edits rather than replacing marked storage files.
 
 ### Dependencies and HTTP client
 
@@ -422,7 +425,11 @@ The Prezio-compatible approach is:
 - `ex_aws`
 - `ex_aws_s3`
 - the already included `req` dependency
-- `ExAws.Request.Req` as the configured ExAws HTTP client
+- `ExAws.Request.Req` as the request-local ExAws HTTP client
+- `jason` and `sweet_xml` for response handling
+
+Credentials, endpoint, and region are passed per request, not installed as global
+ExAws settings, allowing other AWS/S3 integrations to coexist.
 
 This preserves the Phoenix preference for Req rather than introducing
 HTTPoison, Tesla, or direct `:httpc` usage.
@@ -446,11 +453,16 @@ Recommended behavior:
 - `R2_REGION` defaults to `auto`.
 - `R2_ENDPOINT` defaults to
   `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com`.
-- Bucket name and public base URL may be collected as non-secret wizard input.
+- Bucket name and optional public base URL come from runtime environment variables;
+  they are not wizard questions. Private buckets do not require a public URL.
 - Access keys must never be written directly to source-controlled files.
-- Test configuration uses the fake adapter.
-- Development defaults to a fake/local adapter unless R2 credentials are
-  explicitly present.
+- Generated runtime configuration uses the fake adapter in tests even when R2
+  environment variables are present. An explicitly configured alternative backend
+  is preserved.
+- Development defaults to the fake unless an R2 endpoint/account/credential
+  variable is present; partial credentials produce an actionable error.
+- Runtime configuration is embedded in `runtime.exs` because runtime config does
+  not support `import_config`. No additional release config files are needed.
 - Production validates all required values at startup and fails with a clear
   error when configuration is incomplete.
 
@@ -523,6 +535,70 @@ The generated `.kamal/secrets` fetches `KAMAL_REGISTRY_PASSWORD` and
 `SECRET_KEY_BASE` from the derived 1Password item. It contains references only,
 is safe to commit, and must never contain raw secret values. Additional feature
 modules can append their own secret names later.
+
+## Feature: SQLite backups
+
+Implemented as an opt-in `--backups` / `--no-backups` choice, offered only for
+SQLite + Kamal. It defaults to off, including with `--yes`. Backups are independent
+of the application's optional R2 object-storage adapter.
+
+Robert (`../../Nativo/Robert`) is the reference: a separate Kamal backup application
+role using the release image and shared SQLite volume, daily at 15:00 UTC, with
+Litestream replication to a private R2/S3 bucket. No backup configuration was
+found in Prezio during implementation.
+
+The generated app owns:
+
+```text
+rel/overlays/etc/litestream.yml
+rel/overlays/etc/backup.cron
+rel/overlays/bin/backup-env
+rel/overlays/bin/litestream-backup
+rel/overlays/bin/litestream-restore
+rel/overlays/bin/litestream-list
+docs/sqlite-backups.md
+```
+
+Deployment adds a non-proxied `backup` role on the same host and named volume,
+backup aliases, and separate `LITESTREAM_*` environment references. The default
+bucket is `<app-slug>-db-backups`, prefix `<app-slug>-production-v0.5`, and region
+`auto`. Endpoint and access keys are supplied through the existing 1Password
+location, never captured from the installer environment. Private bucket and
+bucket-scoped read/write/list/delete credentials must be provisioned externally.
+
+Pinned, checksum-verified Litestream 0.5.17 and Supercronic 0.2.49 binaries are
+installed in the final Docker stage. Unlike Robert's v0.3 timed `sleep 10` job,
+the backup script uses `replicate -once -force-snapshot -enforce-retention`, a
+15-minute timeout, and a shared-volume file lock. The snapshot retention is
+seven days; the schedule is 15:00 UTC. Daily backups are not continuous protection:
+recovery can lose changes since the last successful job. External missed-job
+alerts and regular restore drills are necessary.
+
+Restores require a separate absolute, non-existing output path, reject the live
+DB and its sidecars/metadata, run a full SQLite integrity check, and publish with
+an atomic no-clobber link. Missing replicas and all other errors fail visibly.
+There is no automatic restore or empty-database fallback in the web entrypoint.
+Promotion into service is an explicit operator procedure after stopping writers
+and preserving the existing database, WAL/SHM, and Litestream metadata.
+
+Initial support is one amd64 web host and one SQLite DB in a named shared
+`/app/storage` volume. Multi-host/custom layouts, unmarked existing integrations,
+and ambiguous deployment structures yield actionable conflicts. Owned files and
+marked deployment sections preserve user changes; incomplete markers are refused.
+`.tamayotchi.exs` records `backups: []` only. Sync inspects and repairs missing
+files; doctor checks installation, not remote backup freshness or recoverability.
+`--no-backups` removes desired-state management but does not uninstall a deployed
+scheduler or delete files, secrets, or remote replicas.
+
+The generated-project smoke test exercises a real WAL-mode SQLite database,
+multiple one-shot backups, restore, and integrity checks using the pinned binaries
+and a local file replica, without cloud credentials or production data.
+
+References:
+- <https://litestream.io/reference/replicate/> (one-shot mode)
+- <https://litestream.io/reference/config/> (snapshot retention and replica settings)
+- <https://litestream.io/reference/restore/> (safe restoration and integrity checks)
+- <https://github.com/aptible/supercronic>
 
 ## Existing-Repository Safety Requirements
 
@@ -723,8 +799,8 @@ Remaining decisions:
 2. Whether Oban Web is included in version one.
 3. Private Git installation or Hex publication.
 4. Whether architecture docs and an `AGENTS.md` baseline are generated.
-5. Whether R2 version one supports only put/delete or also get/list/signed URL.
-6. Whether R2 public URLs are required or private buckets are supported.
+5. Resolved: R2 version one supports put/delete only.
+6. Resolved: private buckets are supported; public base URLs are optional.
 7. Exact desired-state manifest schema and which non-secret inputs belong in
    it.
 8. Whether cron support is merely configured or includes an optional example.
@@ -739,7 +815,8 @@ GoatCounter, and Kamal vertical slices are implemented. Continue with:
 2. Implement app-owned Oban generation for one fresh SQLite fixture.
 3. Make Oban sync idempotent and support existing/partial installations.
 4. Add PostgreSQL support.
-5. Implement app-owned generic R2 storage with a fake test adapter.
+5. R2 storage and fake adapters are implemented; exercise additional existing
+   repositories and add explicit codemods as the storage contract evolves.
 
 ## Continuation Checklist
 

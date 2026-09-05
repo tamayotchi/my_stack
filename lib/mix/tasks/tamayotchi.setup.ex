@@ -10,8 +10,10 @@ defmodule Mix.Tasks.Tamayotchi.Setup do
   ## Options
 
     * `--phoenix` / `--no-phoenix` - choose Phoenix; GoatCounter is automatic
+    * `--r2` / `--no-r2` - choose Cloudflare R2 storage (default: no on first setup)
     * `--kamal` / `--no-kamal` - choose Kamal deployment
     * `--proxy` / `--no-proxy` - choose kamal-proxy when using Kamal
+    * `--backups` / `--no-backups` - daily SQLite backups (default: no; requires SQLite and Kamal)
     * `--yes` - accept defaults and the resulting Igniter changes
   """
 

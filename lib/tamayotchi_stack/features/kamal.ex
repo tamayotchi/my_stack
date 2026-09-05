@@ -19,34 +19,6 @@ defmodule TamayotchiStack.Features.Kamal do
     end
   end
 
-  @spec configured?(Igniter.t()) :: boolean()
-  def configured?(igniter) do
-    Enum.all?(
-      [
-        "Dockerfile",
-        ".dockerignore",
-        "config/deploy.yml",
-        ".kamal/secrets",
-        "rel/overlays/bin/server"
-      ],
-      &Igniter.exists?(igniter, &1)
-    )
-  end
-
-  @spec proxy?(Igniter.t()) :: boolean()
-  def proxy?(igniter) do
-    if Igniter.exists?(igniter, "config/deploy.yml") do
-      igniter
-      |> Igniter.include_existing_file("config/deploy.yml", required?: true)
-      |> Map.fetch!(:rewrite)
-      |> Rewrite.source!("config/deploy.yml")
-      |> Rewrite.Source.get(:content)
-      |> String.contains?("\nproxy:\n")
-    else
-      false
-    end
-  end
-
   @spec hostname_for_app(atom() | String.t()) :: String.t()
   def hostname_for_app(app_name), do: "#{slug(app_name)}.tamayotchi.com"
 
@@ -56,9 +28,40 @@ defmodule TamayotchiStack.Features.Kamal do
       sqlite? = Project.sqlite?(igniter)
       base_module = Igniter.Project.Module.module_name_prefix(igniter)
 
+      r2? =
+        case Manifest.read(igniter) do
+          {:ok, manifest} -> Keyword.has_key?(manifest[:features], :r2)
+          {:error, _} -> false
+        end
+
+      # Opting out of management must not remove credentials needed by code
+      # that remains in the application.
+      r2? = r2? or existing_r2_environment?(igniter)
+
+      deploy_variants =
+        for proxy <- [true, false],
+            r2 <- [true, false],
+            do: deploy_config(app_name, proxy, sqlite?, r2)
+
       igniter
-      |> put_managed_file("config/deploy.yml", deploy_config(app_name, proxy?, sqlite?))
-      |> put_managed_file(".kamal/secrets", secrets(app_name))
+      |> put_managed_file(
+        "config/deploy.yml",
+        deploy_config(app_name, proxy?, sqlite?, r2?),
+        fn current ->
+          if current in deploy_variants do
+            {:ok, deploy_config(app_name, proxy?, sqlite?, r2?)}
+          else
+            merge_r2_environment(current, app_name, proxy?, r2?)
+          end
+        end
+      )
+      |> put_managed_file(".kamal/secrets", secrets(app_name, r2?), fn current ->
+        if current in [secrets(app_name, false), secrets(app_name, true)] do
+          {:ok, secrets(app_name, r2?)}
+        else
+          merge_r2_secrets(current, r2?)
+        end
+      end)
       |> put_managed_file("Dockerfile", dockerfile(app_name, sqlite?))
       |> put_managed_file(".dockerignore", dockerignore())
       |> put_managed_file("rel/overlays/bin/server", server_script(app_name))
@@ -79,7 +82,7 @@ defmodule TamayotchiStack.Features.Kamal do
 
   defp maybe_put_database_files(igniter, _app_name, _base_module, false), do: igniter
 
-  defp put_managed_file(igniter, path, desired) do
+  defp put_managed_file(igniter, path, desired, merge \\ nil) do
     Igniter.create_or_update_file(igniter, path, desired, fn source ->
       current = Rewrite.Source.get(source, :content)
 
@@ -87,8 +90,13 @@ defmodule TamayotchiStack.Features.Kamal do
         current == desired ->
           source
 
-        String.contains?(current, @managed_marker) ->
-          Rewrite.Source.update(source, :content, desired)
+        managed_file?(current) ->
+          # Source/release files are app-owned. Deployment data has explicit
+          # merge rules; a marker alone is not permission to erase user edits.
+          case if(merge, do: merge.(current), else: {:ok, current}) do
+            {:ok, updated} -> Rewrite.Source.update(source, :content, updated)
+            {:error, reason} -> {:error, "Refusing to overwrite customized #{path}; #{reason}"}
+          end
 
         true ->
           {:error,
@@ -97,33 +105,123 @@ defmodule TamayotchiStack.Features.Kamal do
     end)
   end
 
-  defp deploy_config(app_name, true, sqlite?) do
+  defp existing_r2_environment?(igniter) do
+    if Igniter.exists?(igniter, "config/deploy.yml") do
+      igniter = Igniter.include_existing_file(igniter, "config/deploy.yml")
+
+      contents =
+        igniter.rewrite |> Rewrite.source!("config/deploy.yml") |> Rewrite.Source.get(:content)
+
+      String.contains?(contents, "R2_ACCESS_KEY_ID")
+    else
+      false
+    end
+  end
+
+  defp merge_r2_environment(current, app, proxy?, true) do
+    # Restrict edits to the conventional env block, preserving all existing
+    # values, comments, hosts, and unrelated configuration.
+    pattern = ~r/^(env:\n  clear:\n)(.*?)(  secret:\n)(.*?)(?=^[^ \n#]|\z)/ms
+
+    case Regex.run(pattern, current) do
+      [block, start, clear, secret_start, secret] ->
+        if Regex.match?(~r/^proxy:\s*$/m, current) == proxy? and
+             simple_environment_block?(clear, secret) do
+          defaults = [{"R2_REGION", "auto"}, {"R2_BUCKET", to_string(app)}]
+
+          clear =
+            Enum.reduce(defaults, clear, fn {key, value}, text ->
+              if Regex.match?(Regex.compile!("^    [\"']?#{key}[\"']?:", "m"), text),
+                do: text,
+                else: text <> "    #{key}: #{value}\n"
+            end)
+
+          secret =
+            Enum.reduce(r2_secret_names(), secret, fn name, text ->
+              if Regex.match?(
+                   Regex.compile!("^    - [\"']?#{name}[\"']?(?:[ \\t]+#.*)?[ \\t]*$", "m"),
+                   text
+                 ),
+                 do: text,
+                 else: text <> "    - #{name}\n"
+            end)
+
+          {:ok,
+           String.replace(current, block, start <> clear <> secret_start <> secret, global: false)}
+        else
+          {:error, "review the proxy setting and env block structure before adding R2 manually"}
+        end
+
+      _ ->
+        {:error,
+         "add R2_REGION/R2_BUCKET to env.clear and the three R2 credential names to env.secret manually"}
+    end
+  end
+
+  defp merge_r2_environment(current, _app, proxy?, false) do
+    if Regex.match?(~r/^proxy:\s*$/m, current) == proxy? do
+      {:ok, current}
+    else
+      {:error, "review deployment changes manually"}
+    end
+  end
+
+  defp simple_environment_block?(clear, secret) do
+    Enum.all?(
+      String.split(clear, "\n"),
+      &Regex.match?(~r/^(\s*|\s*#.*|    ["']?[A-Za-z_][A-Za-z_0-9]*["']?:.*)$/, &1)
+    ) and
+      Enum.all?(String.split(secret, "\n"), &Regex.match?(~r/^(\s*|\s*#.*|    - .*)$/, &1))
+  end
+
+  defp merge_r2_secrets(current, true) do
+    case Regex.run(~r/^SECRETS=\$\(kamal secrets fetch [^\n]*\)$/m, current) do
+      [fetch] ->
+        updated_fetch =
+          Enum.reduce(r2_secret_names(), fetch, fn name, line ->
+            if name in String.split(line, [" ", ")"]),
+              do: line,
+              else: String.trim_trailing(line, ")") <> " #{name})"
+          end)
+
+        extracts =
+          Enum.map_join(r2_secret_names(), "", fn name ->
+            if Regex.match?(Regex.compile!("^(?:export +)?#{name}=", "m"), current),
+              do: "",
+              else: "\n#{name}=$(kamal secrets extract #{name} $SECRETS)"
+          end)
+
+        {:ok, String.replace(current, fetch, updated_fetch <> extracts, global: false)}
+
+      _ ->
+        {:error,
+         "add R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, and R2_SECRET_ACCESS_KEY references to your secrets provider manually"}
+    end
+  end
+
+  defp merge_r2_secrets(current, false), do: {:ok, current}
+
+  defp managed_file?(contents) do
+    comment = "# #{@managed_marker}\n"
+
+    String.starts_with?(contents, comment) or
+      String.starts_with?(contents, "#!/bin/sh\n" <> comment)
+  end
+
+  defp deploy_config(app_name, proxy?, sqlite?, r2?) do
     app = to_string(app_name)
     service = slug(app_name)
-    hostname = hostname_for_app(app_name)
+    hostname = if proxy?, do: hostname_for_app(app_name), else: @server
 
     """
     # #{@managed_marker}
     service: #{service}
     image: #{@registry_owner}/#{service}
 
-    servers:
-      web:
-        - #{@server}
-
-    ssh:
+    #{server_configuration(proxy?)}#{proxy_configuration(proxy?, hostname)}ssh:
       user: root
       keys:
         - ~/.ssh/id_home_server
-
-    proxy:
-      ssl: false
-      host: #{hostname}
-      app_port: 4000
-      healthcheck:
-        interval: 3
-        path: /
-        timeout: 180
 
     registry:
       username: #{@registry_owner}
@@ -137,26 +235,28 @@ defmodule TamayotchiStack.Features.Kamal do
       clear:
         PHX_HOST: #{hostname}
         PORT: 4000
-    #{database_environment(app, sqlite?)}  secret:
+    #{database_environment(app, sqlite?)}#{r2_environment(app, r2?)}  secret:
         - SECRET_KEY_BASE
-    #{database_volume(service, sqlite?)}
+    #{r2_secrets(r2?)}#{database_volume(service, sqlite?)}
     aliases:
       console: app exec --interactive --reuse "/app/bin/#{app} remote"
       shell: app exec --interactive --reuse "/bin/sh"
       logs: app logs -f
-    #{migration_alias(app, sqlite?)}
+    #{migration_alias(sqlite?)}
     """
   end
 
-  defp deploy_config(app_name, false, sqlite?) do
-    app = to_string(app_name)
-    service = slug(app_name)
+  defp server_configuration(true) do
+    """
+    servers:
+      web:
+        - #{@server}
 
     """
-    # #{@managed_marker}
-    service: #{service}
-    image: #{@registry_owner}/#{service}
+  end
 
+  defp server_configuration(false) do
+    """
     servers:
       web:
         hosts:
@@ -165,33 +265,24 @@ defmodule TamayotchiStack.Features.Kamal do
         options:
           publish: "4000:4000"
 
-    ssh:
-      user: root
-      keys:
-        - ~/.ssh/id_home_server
-
-    registry:
-      username: #{@registry_owner}
-      password:
-        - KAMAL_REGISTRY_PASSWORD
-
-    builder:
-      arch: amd64
-
-    env:
-      clear:
-        PHX_HOST: #{@server}
-        PORT: 4000
-    #{database_environment(app, sqlite?)}  secret:
-        - SECRET_KEY_BASE
-    #{database_volume(service, sqlite?)}
-    aliases:
-      console: app exec --interactive --reuse "/app/bin/#{app} remote"
-      shell: app exec --interactive --reuse "/bin/sh"
-      logs: app logs -f
-    #{migration_alias(app, sqlite?)}
     """
   end
+
+  defp proxy_configuration(true, hostname) do
+    """
+    proxy:
+      ssl: false
+      host: #{hostname}
+      app_port: 4000
+      healthcheck:
+        interval: 3
+        path: /
+        timeout: 180
+
+    """
+  end
+
+  defp proxy_configuration(false, _hostname), do: ""
 
   defp database_environment(app, true), do: "    DATABASE_PATH: /app/storage/#{app}.db\n"
   defp database_environment(_app, false), do: ""
@@ -206,18 +297,40 @@ defmodule TamayotchiStack.Features.Kamal do
 
   defp database_volume(_service, false), do: ""
 
-  defp migration_alias(_app, true), do: "  migrate: app exec --reuse \"/app/bin/migrate\"\n"
-  defp migration_alias(_app, false), do: ""
+  defp migration_alias(true), do: "  migrate: app exec --reuse \"/app/bin/migrate\"\n"
+  defp migration_alias(false), do: ""
 
-  defp secrets(app_name) do
+  defp r2_environment(app, true) do
+    "    R2_REGION: auto\n    R2_BUCKET: #{app}\n"
+  end
+
+  defp r2_environment(_app, false), do: ""
+
+  defp r2_secrets(true) do
+    Enum.map_join(r2_secret_names(), "", &"    - #{&1}\n")
+  end
+
+  defp r2_secrets(false), do: ""
+
+  defp r2_secret_names, do: ~w(R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY)
+
+  defp secrets(app_name, r2?) do
     item = app_name |> to_string() |> String.upcase()
+    extra_names = if r2?, do: " " <> Enum.join(r2_secret_names(), " "), else: ""
+
+    extra_extracts =
+      if r2?,
+        do:
+          Enum.map_join(r2_secret_names(), "", &"#{&1}=$(kamal secrets extract #{&1} $SECRETS)\n"),
+        else: ""
 
     """
     # #{@managed_marker}
     # Safe to commit: this file contains 1Password references, never raw values.
-    SECRETS=$(kamal secrets fetch --adapter 1password --account #{@one_password_account} --from #{@one_password_vault}/#{item} KAMAL_REGISTRY_PASSWORD SECRET_KEY_BASE)
+    SECRETS=$(kamal secrets fetch --adapter 1password --account #{@one_password_account} --from #{@one_password_vault}/#{item} KAMAL_REGISTRY_PASSWORD SECRET_KEY_BASE#{extra_names})
     KAMAL_REGISTRY_PASSWORD=$(kamal secrets extract KAMAL_REGISTRY_PASSWORD $SECRETS)
     SECRET_KEY_BASE=$(kamal secrets extract SECRET_KEY_BASE $SECRETS)
+    #{extra_extracts}\
     """
   end
 

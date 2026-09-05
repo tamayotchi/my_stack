@@ -8,11 +8,17 @@ defmodule TamayotchiStack.TaskInfo do
       Keyword.merge(
         [
           group: :tamayotchi,
-          schema: [phoenix: :boolean, kamal: :boolean, proxy: :boolean],
+          schema: [
+            phoenix: :boolean,
+            r2: :boolean,
+            backups: :boolean,
+            kamal: :boolean,
+            proxy: :boolean
+          ],
           defaults: [],
           aliases: [],
           positional: [],
-          example: "mix tamayotchi.setup --phoenix"
+          example: "mix tamayotchi.setup"
         ],
         overrides
       )

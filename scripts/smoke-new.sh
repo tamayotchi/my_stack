@@ -17,12 +17,20 @@ MIX_ARCHIVES="$archive_dir" mix archive.install --force tamayotchi_stack_new-0.1
 
 cd "$workspace"
 MIX_ARCHIVES="$archive_dir" TAMAYOTCHI_STACK_DEV_PATH="$root" \
-  mix tamayotchi.new smoke_app --yes
+  mix tamayotchi.new smoke_app --r2 --backups --yes
 
 cd "$app_path"
 test -d .git
 test -f config/deploy.yml
 test -f .kamal/secrets
+test -f rel/overlays/etc/backup.cron
+test -f rel/overlays/bin/litestream-backup
+rg -q 'backup: app exec --reuse --roles backup' config/deploy.yml
+rg -q 'LITESTREAM_SECRET_ACCESS_KEY' .kamal/secrets
+test -f lib/smoke_app/storage/r2.ex
+rg -q 'tamayotchi_r2_storage' config/runtime.exs
+rg -q 'R2_BUCKET: smoke_app' config/deploy.yml
+rg -q 'R2_SECRET_ACCESS_KEY' .kamal/secrets
 test -f rel/overlays/bin/docker-entrypoint
 rg -q -- "- 192.168.1.39" config/deploy.yml
 rg -q "host: smoke-app.tamayotchi.com" config/deploy.yml
@@ -34,6 +42,16 @@ mix compile --warnings-as-errors
 mix assets.build
 mix test
 MIX_ENV=prod mix release
+bash "$root/scripts/smoke-backups.sh" "$app_path/_build/prod/rel/smoke_app"
+
+# Exercise release-time R2 validation without making any storage requests.
+SECRET_KEY_BASE=$(printf 'test-only-%.0s' {1..8}) \
+DATABASE_PATH="$app_path/smoke.db" PHX_HOST=localhost \
+R2_ACCOUNT_ID=test-account R2_BUCKET=test-bucket \
+R2_ACCESS_KEY_ID=test-access-key R2_SECRET_ACCESS_KEY=test-secret-key \
+  _build/prod/rel/smoke_app/bin/smoke_app eval \
+  'unless Application.fetch_env!(:smoke_app, :storage)[:adapter] == SmokeApp.Storage.R2, do: raise("wrong release storage adapter")'
+
 mix tamayotchi.sync --yes
 mix tamayotchi.doctor --format json --check
 

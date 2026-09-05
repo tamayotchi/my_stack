@@ -2,7 +2,7 @@ defmodule TamayotchiStack.MixProject do
   use Mix.Project
 
   @version "0.1.0"
-  @source_url "https://github.com/tamayotchi/tamayotchi_stack"
+  @source_url "https://github.com/tamayotchi/my_stack"
 
   def project do
     [
@@ -19,7 +19,7 @@ defmodule TamayotchiStack.MixProject do
   end
 
   def application do
-    [extra_applications: [:logger]]
+    [extra_applications: [:logger, :eex]]
   end
 
   def cli do

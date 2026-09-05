@@ -60,11 +60,15 @@ defmodule TamayotchiStack.Manifest do
          @schema <- Keyword.get(manifest, :schema),
          app when is_atom(app) <- Keyword.get(manifest, :app),
          features when is_list(features) <- Keyword.get(manifest, :features, []),
-         true <- Keyword.keyword?(features) do
+         true <- Keyword.keyword?(features),
+         :ok <- validate_features(features) do
       {:ok, manifest}
     else
       {:error, {line, error, token}} ->
         {:error, "invalid #{@path} at line #{line}: #{error} #{inspect(token)}"}
+
+      {:error, reason} ->
+        {:error, reason}
 
       _ ->
         {:error,
@@ -96,6 +100,35 @@ defmodule TamayotchiStack.Manifest do
   defp remove_legacy_feature_state(current) do
     features = current |> Keyword.fetch!(:features) |> Keyword.delete(:goatcounter)
     Keyword.replace!(current, :features, features)
+  end
+
+  defp validate_features(features) do
+    phoenix_config = Keyword.get(features, :phoenix, [])
+    kamal_config = Keyword.get(features, :kamal, [])
+
+    cond do
+      Keyword.has_key?(features, :phoenix) and phoenix_config != [] ->
+        {:error, "#{@path} Phoenix configuration must be []"}
+
+      Keyword.has_key?(features, :backups) and Keyword.get(features, :backups) != [] ->
+        {:error,
+         "#{@path} backups configuration must be []; use app-owned config and runtime environment variables"}
+
+      Keyword.has_key?(features, :r2) and Keyword.get(features, :r2) != [] ->
+        {:error, "#{@path} R2 configuration must be []; use runtime environment variables"}
+
+      Keyword.has_key?(features, :kamal) and not valid_kamal_config?(kamal_config) ->
+        {:error, "#{@path} Kamal configuration must contain only proxy: true or proxy: false"}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp valid_kamal_config?(config) do
+    is_list(config) and Keyword.keyword?(config) and
+      Keyword.keys(config) in [[], [:proxy]] and
+      is_boolean(Keyword.get(config, :proxy, true))
   end
 
   defp validate_app(current, app_name) do

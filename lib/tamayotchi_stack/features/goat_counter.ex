@@ -67,13 +67,6 @@ defmodule TamayotchiStack.Features.GoatCounter do
     end
   end
 
-  @spec configured?(Igniter.t()) :: boolean()
-  def configured?(igniter) do
-    Igniter.exists?(igniter, @wrapper_path) and
-      Igniter.exists?(igniter, @vendor_path) and
-      app_js_imports_goatcounter?(igniter)
-  end
-
   defp put_managed_file(igniter, path, desired) do
     Igniter.create_or_update_file(igniter, path, desired, fn source ->
       current = Rewrite.Source.get(source, :content)
@@ -120,15 +113,6 @@ defmodule TamayotchiStack.Features.GoatCounter do
       nil ->
         "import \"./goatcounter\";\n" <> contents
     end
-  end
-
-  defp app_js_imports_goatcounter?(igniter) do
-    igniter = Igniter.include_existing_file(igniter, @app_js, required?: true)
-
-    igniter.rewrite
-    |> Rewrite.source!(@app_js)
-    |> Rewrite.Source.get(:content)
-    |> imports_goatcounter?()
   end
 
   defp imports_goatcounter?(contents) do

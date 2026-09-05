@@ -17,6 +17,10 @@ defmodule TamayotchiStack.Doctor do
       manifest: manifest_status(manifest),
       managed_phoenix: managed_phoenix?,
       managed_kamal: managed_kamal?,
+      managed_backups: backups_enabled?(manifest),
+      backups: Project.backups_on_disk?(),
+      managed_r2: r2_enabled?(manifest),
+      r2: Project.r2_on_disk?(),
       phoenix: Project.phoenix_on_disk?(),
       kamal: Project.kamal_on_disk?(),
       kamal_proxy: Project.kamal_proxy_on_disk?(),
@@ -31,11 +35,14 @@ defmodule TamayotchiStack.Doctor do
   @spec healthy?(map()) :: boolean()
   def healthy?(report) do
     report.manifest == :ok and
+      (not Map.get(report, :managed_r2, false) or Map.get(report, :r2, false)) and
+      (not Map.get(report, :managed_backups, false) or Map.get(report, :backups, false)) and
       (not report.managed_phoenix or
          (report.phoenix and report.goatcounter and
             report.goatcounter_endpoint == report.expected_goatcounter_endpoint)) and
       (not Map.get(report, :managed_kamal, false) or
-         (report.kamal and report.kamal_proxy == report.expected_kamal_proxy))
+         (report.phoenix and report.kamal and
+            report.kamal_proxy == report.expected_kamal_proxy))
   end
 
   @spec format(map()) :: String.t()
@@ -49,6 +56,8 @@ defmodule TamayotchiStack.Doctor do
       GoatCounter:  #{goatcounter_status(report)}
       Endpoint:     #{report.goatcounter_endpoint || "not configured"}
       Expected:     #{report.expected_goatcounter_endpoint || "not applicable"}
+      R2 storage:   #{feature_status(report.r2, report.managed_r2)}
+      SQLite backups: #{feature_status(report.backups, report.managed_backups)} (installation only; verify backup freshness separately)
       Kamal:        #{feature_status(report.kamal, report.managed_kamal)}
       Kamal proxy:  #{proxy_status(report)}
     """
@@ -64,6 +73,12 @@ defmodule TamayotchiStack.Doctor do
   end
 
   defp phoenix_enabled?({:error, _reason}), do: false
+
+  defp backups_enabled?({:ok, manifest}), do: Keyword.has_key?(manifest[:features], :backups)
+  defp backups_enabled?({:error, _}), do: false
+
+  defp r2_enabled?({:ok, manifest}), do: Keyword.has_key?(manifest[:features], :r2)
+  defp r2_enabled?({:error, _}), do: false
 
   defp kamal_configuration({:ok, manifest}) do
     case Keyword.get(Keyword.get(manifest, :features, []), :kamal) do
