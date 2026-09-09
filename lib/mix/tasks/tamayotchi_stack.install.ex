@@ -8,7 +8,8 @@ defmodule Mix.Tasks.TamayotchiStack.Install do
   use Igniter.Mix.Task
 
   @impl Igniter.Mix.Task
-  def info(_argv, _composing_task) do
+  def info(argv, _composing_task) do
+    TamayotchiStack.TaskInfo.reject_dry_run!(argv)
     TamayotchiStack.TaskInfo.setup(only: [:dev, :test], dep_opts: [runtime: false])
   end
 

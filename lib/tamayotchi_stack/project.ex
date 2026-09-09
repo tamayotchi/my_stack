@@ -36,12 +36,10 @@ defmodule TamayotchiStack.Project do
   @spec sqlite_on_disk?() :: boolean()
   def sqlite_on_disk?, do: dependency_on_disk?(:ecto_sqlite3)
 
-  @spec kamal?(Igniter.t()) :: boolean()
-  def kamal?(igniter), do: Enum.all?(@kamal_files, &Igniter.exists?(igniter, &1))
-
   @spec kamal_on_disk?() :: boolean()
   def kamal_on_disk? do
-    Enum.all?(@kamal_files, &File.exists?/1) and sqlite_kamal_files_on_disk?()
+    sqlite_on_disk?() and Enum.all?(@kamal_files, &File.exists?/1) and
+      sqlite_kamal_files_on_disk?()
   end
 
   @spec kamal_proxy?(Igniter.t(), boolean()) :: boolean()
@@ -63,13 +61,13 @@ defmodule TamayotchiStack.Project do
     end
   end
 
-  @spec backups_on_disk?(boolean()) :: boolean()
-  def backups_on_disk?(kamal? \\ false) do
+  @spec backups_on_disk?() :: boolean()
+  def backups_on_disk? do
     sqlite_on_disk?() and
       Enum.all?(TamayotchiStack.Features.Backups.paths(), &File.exists?/1) and
       file_contains?("rel/overlays/etc/backup.cron", ["/app/bin/litestream-backup"]) and
       file_contains?("rel/overlays/bin/litestream-backup", ["litestream replicate", "-once"]) and
-      (not kamal? or backup_deployment_on_disk?())
+      backup_deployment_on_disk?()
   end
 
   defp backup_deployment_on_disk? do
@@ -162,12 +160,8 @@ defmodule TamayotchiStack.Project do
   def release_path(base_module), do: "lib/#{Macro.underscore(base_module)}/release.ex"
 
   defp sqlite_kamal_files_on_disk? do
-    if sqlite_on_disk?() do
-      base_module = Mix.Project.get() |> Module.split() |> Enum.drop(-1) |> Module.concat()
-      Enum.all?([release_path(base_module) | @kamal_sqlite_files], &File.exists?/1)
-    else
-      true
-    end
+    base_module = Mix.Project.get() |> Module.split() |> Enum.drop(-1) |> Module.concat()
+    Enum.all?([release_path(base_module) | @kamal_sqlite_files], &File.exists?/1)
   end
 
   defp source_content(igniter, path) do

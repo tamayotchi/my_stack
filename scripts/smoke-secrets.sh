@@ -44,7 +44,7 @@ elif args[:2] == ['item', 'create']:
     assert state['item'] is None
     result = json.load(sys.stdin)
     assert result['title'] == 'CREDENTIAL_APP'
-    assert [f['label'] for f in result['fields']] == ['SECRET_KEY_BASE', 'KAMAL_REGISTRY_PASSWORD']
+    assert [f['label'] for f in result['fields']] == ['SECRET_KEY_BASE', 'KAMAL_REGISTRY_PASSWORD', 'LITESTREAM_ENDPOINT', 'LITESTREAM_ACCESS_KEY_ID', 'LITESTREAM_SECRET_ACCESS_KEY']
     result.update(id=item, vault={'id': vault}, version=1)
     state['writes'] += 1
     state['item'] = result
@@ -62,19 +62,32 @@ export MIX_ARCHIVES="$workspace/archives"
 export TAMAYOTCHI_STACK_DEV_PATH="$root"
 export TSTACK_TEST_OP_STATE="$workspace/synthetic-vault.json"
 unset SECRET_KEY_BASE KAMAL_REGISTRY_PASSWORD CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN OP_SERVICE_ACCOUNT_TOKEN
+# Import synthetic backup credentials so the real generator never contacts Cloudflare.
+export LITESTREAM_ENDPOINT=https://synthetic-account.r2.cloudflarestorage.com
+export LITESTREAM_ACCESS_KEY_ID=synthetic-backup-access
+export LITESTREAM_SECRET_ACCESS_KEY=synthetic-backup-secret
 
 cd "$workspace"
 # No --secrets flag and no separate manual secrets command: generation does it.
-mix tamayotchi.new credential_app --no-sqlite --yes
+mix tamayotchi.new credential_app --yes
 cd credential_app
 mix compile --warnings-as-errors
 mix test
 
-cp "$TSTACK_TEST_OP_STATE" "$workspace/before-dry-run.json"
-mix tamayotchi.setup --dry-run --yes
-cmp "$TSTACK_TEST_OP_STATE" "$workspace/before-dry-run.json"
+cp "$TSTACK_TEST_OP_STATE" "$workspace/before-file-only.json"
+# Removed options must fail, never silently apply changes or contact providers.
+for task in tamayotchi.setup tamayotchi_stack.install tamayotchi.sync tamayotchi.secrets; do
+  if mix "$task" --dry-run --yes > "$workspace/removed-option.log" 2>&1; then
+    echo "$task incorrectly accepted --dry-run" >&2
+    exit 1
+  fi
+  rg -q 'no longer support --dry-run|Invalid secrets options' "$workspace/removed-option.log"
+  cmp "$TSTACK_TEST_OP_STATE" "$workspace/before-file-only.json"
+done
+mix tamayotchi.setup --no-secrets --yes
+cmp "$TSTACK_TEST_OP_STATE" "$workspace/before-file-only.json"
 mix tamayotchi.sync --yes
-cmp "$TSTACK_TEST_OP_STATE" "$workspace/before-dry-run.json"
+cmp "$TSTACK_TEST_OP_STATE" "$workspace/before-file-only.json"
 # An older Phoenix app without Kamal is unhealthy until sync installs it.
 # Sync must not read the synthetic vault or provision anything.
 printf '[schema: 1, app: :credential_app, features: [phoenix: []]]\n' > .tamayotchi.exs
@@ -86,10 +99,10 @@ fi
 rg -q '"managed_kamal": true' "$workspace/legacy-doctor.json"
 rg -q '"kamal": false' "$workspace/legacy-doctor.json"
 mix tamayotchi.sync --yes
-cmp "$TSTACK_TEST_OP_STATE" "$workspace/before-dry-run.json"
+cmp "$TSTACK_TEST_OP_STATE" "$workspace/before-file-only.json"
 test -f config/deploy.yml
 
-# A normal setup rerun checks the vault but never rotates either credential.
+# A normal setup rerun checks the vault but never rotates any credential.
 mix tamayotchi.setup --yes
 mix tamayotchi.doctor --check --format json
 
@@ -98,10 +111,13 @@ import base64, json, pathlib, sys
 state = json.loads(pathlib.Path(sys.argv[1]).read_text())
 assert state['writes'] == 1
 fields = state['item']['fields']
-assert len(fields) == 2 and all(f['type'] == 'CONCEALED' for f in fields)
+assert len(fields) == 5 and all(f['type'] == 'CONCEALED' for f in fields)
 values = {f['label']: f['value'] for f in fields}
 assert len(base64.b64decode(values['SECRET_KEY_BASE'])) == 48
 assert values['KAMAL_REGISTRY_PASSWORD'] == 'ghp_' + 'a' * 36
+assert values['LITESTREAM_ENDPOINT'] == 'https://synthetic-account.r2.cloudflarestorage.com'
+assert values['LITESTREAM_ACCESS_KEY_ID'] == 'synthetic-backup-access'
+assert values['LITESTREAM_SECRET_ACCESS_KEY'] == 'synthetic-backup-secret'
 # No synthetic credential may appear in a generated/source-controlled file either.
 for path in pathlib.Path('.').rglob('*'):
     if path.is_file() and not any(p in {'_build', 'deps', '.git'} for p in path.parts):
@@ -117,6 +133,8 @@ cd plain_app
 test ! -f Dockerfile
 test ! -f config/deploy.yml
 test ! -f .kamal/secrets
+test ! -f lib/plain_app/repo.ex
+test ! -f rel/overlays/etc/backup.cron
 mix test
 mix tamayotchi.sync --yes
 mix tamayotchi.doctor --check --format json

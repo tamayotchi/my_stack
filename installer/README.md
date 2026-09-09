@@ -9,11 +9,11 @@ mix tamayotchi.new my_app
 ```
 
 The installer derives the target directory and root module from `my_app`, and
-always initializes Git. It asks about Phoenix, SQLite, optional Cloudflare R2
-storage, and whether to use `kamal-proxy`. GoatCounter and Kamal are always
-included with Phoenix; there is no Kamal question or `--kamal`/`--no-kamal` flag.
-`--no-phoenix` creates a plain Mix app without Kamal or a proxy question.
-Backup scripts are always included with SQLite.
+always initializes Git. It asks only about Phoenix, optional Cloudflare R2
+storage, and whether to use `kamal-proxy`. Phoenix always includes SQLite,
+GoatCounter, Kamal, and daily backups. There are no separate SQLite/Kamal/backup
+flags or questions. `--no-phoenix` creates a plain Mix app without database or
+deployment scaffolding, and omits the proxy question.
 R2 defaults to off, including with `--yes`:
 
 ```sh

@@ -10,7 +10,8 @@ defmodule Mix.Tasks.Tamayotchi.Sync do
   use Igniter.Mix.Task
 
   @impl Igniter.Mix.Task
-  def info(_argv, _composing_task) do
+  def info(argv, _composing_task) do
+    TamayotchiStack.TaskInfo.reject_dry_run!(argv)
     %Igniter.Mix.Task.Info{group: :tamayotchi, example: "mix tamayotchi.sync"}
   end
 

@@ -9,7 +9,6 @@ defmodule Mix.Tasks.Tamayotchi.New do
   ## Options
 
     * `--phoenix` / `--no-phoenix` - choose Phoenix (default: yes)
-    * `--sqlite` / `--no-sqlite` - choose SQLite when using Phoenix (default: yes)
     * `--r2` / `--no-r2` - choose Cloudflare R2 storage (default: no)
     * `--proxy` / `--no-proxy` - choose kamal-proxy (default: yes with Phoenix)
     * `--secrets` / `--no-secrets` - automatically create/save missing credentials
@@ -18,8 +17,8 @@ defmodule Mix.Tasks.Tamayotchi.New do
 
   The application name determines its directory, root module, and GoatCounter
   endpoint. Every generated project initializes a Git repository.
-  Phoenix always includes Kamal; plain Mix applications do not use Kamal.
-  SQLite always includes backup scripts and a daily Kamal backup role.
+  Phoenix always includes SQLite, Kamal, GoatCounter, and daily database backups.
+  Plain Mix applications include none of these. Only R2 and kamal-proxy are choices.
   """
 
   use Mix.Task
@@ -28,7 +27,6 @@ defmodule Mix.Tasks.Tamayotchi.New do
 
   @switches [
     phoenix: :boolean,
-    sqlite: :boolean,
     r2: :boolean,
     proxy: :boolean,
     secrets: :boolean,
@@ -44,7 +42,6 @@ defmodule Mix.Tasks.Tamayotchi.New do
     validate_app_name!(app_name)
 
     phoenix? = resolve_boolean(options, :phoenix, "Include Phoenix?", true)
-    sqlite? = resolve_sqlite(options, phoenix?)
     r2? = resolve_boolean(options, :r2, "Include Cloudflare R2 storage?", false)
     proxy? = resolve_proxy(options, phoenix?)
 
@@ -55,7 +52,7 @@ defmodule Mix.Tasks.Tamayotchi.New do
       Mix.raise("Target directory already exists: #{target}")
     end
 
-    generate_project!(target, phoenix?, sqlite?)
+    generate_project!(target, phoenix?)
     install_stack!(target)
     init_git!(target)
     configure_stack!(target, phoenix?, r2?, proxy?, Keyword.get(options, :secrets, true))
@@ -121,18 +118,6 @@ defmodule Mix.Tasks.Tamayotchi.New do
     end
   end
 
-  defp resolve_sqlite(options, true) do
-    resolve_boolean(options, :sqlite, "Include SQLite database?", true)
-  end
-
-  defp resolve_sqlite(options, false) do
-    if Keyword.get(options, :sqlite, false) do
-      Mix.raise("--sqlite requires Phoenix; enable --phoenix or remove it")
-    end
-
-    false
-  end
-
   defp resolve_proxy(options, true) do
     resolve_boolean(options, :proxy, "Use kamal-proxy?", true)
   end
@@ -145,12 +130,11 @@ defmodule Mix.Tasks.Tamayotchi.New do
     false
   end
 
-  defp generate_project!(target, true, sqlite?) do
-    database_args = if sqlite?, do: ["--database", "sqlite3"], else: ["--no-ecto"]
-    New.run_command!("mix", ["phx.new", target, "--no-install"] ++ database_args)
+  defp generate_project!(target, true) do
+    New.run_command!("mix", ["phx.new", target, "--no-install", "--database", "sqlite3"])
   end
 
-  defp generate_project!(target, false, _sqlite?) do
+  defp generate_project!(target, false) do
     New.run_command!("mix", ["new", target, "--sup"])
   end
 

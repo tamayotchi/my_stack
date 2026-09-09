@@ -30,11 +30,25 @@ defmodule TamayotchiStack.SecretsSetupTest do
     assert Secrets.queue_setup(plain, []).tasks == []
   end
 
-  test "obsolete Kamal flags are rejected by setup and install" do
+  test "obsolete database and deployment flags are rejected by setup and install" do
     for task <- ["tamayotchi.setup", "tamayotchi_stack.install"],
-        flag <- ["--kamal", "--no-kamal", "--tamayotchi.kamal", "--tamayotchi.no-kamal"] do
-      assert_raise Mix.Error, ~r/Kamal is automatic with Phoenix/, fn ->
-        Igniter.compose_task(test_project(app_name: :sample), task, ["--yes", flag])
+        feature <- ["sqlite", "kamal", "backups"],
+        prefix <- ["--", "--no-", "--tamayotchi.", "--tamayotchi.no-"] do
+      assert_raise Mix.Error, ~r/automatic with Phoenix/, fn ->
+        Igniter.compose_task(test_project(app_name: :sample), task, ["--yes", prefix <> feature])
+      end
+    end
+  end
+
+  test "setup, install, and sync reject inherited dry-run flags before composing changes" do
+    for task <- ["tamayotchi.setup", "tamayotchi_stack.install", "tamayotchi.sync"],
+        prefix <- ["--", "--no-", "--tamayotchi.", "--tamayotchi.no-"],
+        suffix <- ["", "=true", "=false"] do
+      assert_raise Mix.Error, ~r/no longer support --dry-run/, fn ->
+        Igniter.compose_task(test_project(app_name: :sample), task, [
+          "--yes",
+          prefix <> "dry-run" <> suffix
+        ])
       end
     end
   end

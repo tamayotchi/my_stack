@@ -37,7 +37,7 @@ defmodule TamayotchiStack.SecretsTest do
     assert {:error, _} = Secrets.prepare([app: :sample, features: []], [], client: client)
   end
 
-  test "SQLite always requires backup credentials even when an older manifest omitted backups" do
+  test "managed Phoenix + SQLite backfills backup credentials in older manifests" do
     {client, _state} = client()
     manifest = [schema: 1, app: :sample, features: [phoenix: []]]
 
@@ -61,6 +61,19 @@ defmodule TamayotchiStack.SecretsTest do
              )
 
     assert no_sqlite.actions == [{"SECRET_KEY_BASE", :generate}]
+
+    assert {:ok, no_phoenix} =
+             Secrets.prepare([schema: 1, app: :sample, features: [r2: []]], [],
+               client: client,
+               env: environment(imports()),
+               sqlite?: true
+             )
+
+    assert length(no_phoenix.actions) == 3
+
+    refute Enum.any?(no_phoenix.actions, fn {name, _} ->
+             String.starts_with?(name, "LITESTREAM_")
+           end)
   end
 
   test "generates a Phoenix key, imports others, and uses stdin payloads" do

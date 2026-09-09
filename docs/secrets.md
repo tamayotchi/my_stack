@@ -32,9 +32,11 @@ is required for the normal flow.** Existing credentials are never rotated.
    in the application's item, deployment environment, or repository.
 
 Use actual credential values in those fields, not `op://` reference strings.
-The bootstrap item is only read, never modified. You don't need its Cloudflare
-fields for a Phoenix project without SQLite/R2. Plain Mix apps (`--no-phoenix`)
-have no Kamal and need no registry credential; Phoenix always includes Kamal. The tool cannot create its own initial Cloudflare/1Password authorization
+The bootstrap item is only read, never modified. Every Phoenix app includes SQLite
+backups and Kamal, so it needs both Cloudflare and registry bootstrap credentials,
+even when application R2 storage is disabled. Plain Mix apps (`--no-phoenix`) need
+no registry credential; they need Cloudflare only if R2 is selected. The tool cannot
+create its own initial Cloudflare/1Password authorization
 or manufacture a valid GitHub PAT. **You fill these fields once, not for each new
 app.** Only expired/revoked bootstrap credentials need replacement. Each app gets
 its own generated Phoenix key and separately issued Cloudflare credentials.
@@ -78,8 +80,8 @@ mix tamayotchi.setup --yes
 ```
 
 The application item (`SERVER/MY_APP`, for example) is created automatically.
-SQLite always includes backup credentials, even for older manifests that omitted
-backups; application R2 storage is independent.
+Managed Phoenix always includes SQLite backup credentials, even for older manifests
+that omitted backups; application R2 storage is independent.
 
 ## What happens automatically
 
@@ -96,7 +98,7 @@ Every generated managed field uses 1Password's **Password/concealed** type,
 including account IDs, endpoints, and provisioning markers. Existing managed text
 fields are converted to concealed on the next accepted secrets run without changing
 their values, IDs, or unrelated fields. Item titles and field labels remain visible.
-`--dry-run` previews these presentation changes; `--only` limits the fields changed.
+The confirmation plan includes these presentation changes; `--only` limits the fields changed.
 
 Only missing values are filled. Explicit environment variables of the same name
 can import externally issued credentials instead; existing item values always
@@ -126,30 +128,30 @@ values require explicit manual imports; the tool does not guess or rotate keys.
 Public URLs, custom domains, DNS, and production deployment remain application-owned.
 Kamal scopes Litestream credentials to `servers.backup.env.secret`, not the global
 web environment. Sync migrates exact old generated credential blocks; customized
-or ambiguous blocks require manual reconciliation. For existing SQLite repositories
-without managed Phoenix/Kamal, installing the backup runtime tools and scheduler
-is still manual.
+or ambiguous blocks require manual reconciliation. Phoenix always includes SQLite,
+Kamal, the backup runtime tools, and the schedule; standalone backup installation
+for plain Mix apps is not supported.
 
 Older Phoenix apps without Kamal should run `mix tamayotchi.sync` to install its
 files and update the manifest, then `mix tamayotchi.secrets --yes` if credentials
 are missing. Sync never reads or writes provider credentials.
 
-## Offline setup, previews, and recovery commands
+## Offline setup, confirmation, and recovery commands
 
 ```sh
 mix tamayotchi.new my_app --no-secrets --yes
 mix tamayotchi.setup --no-secrets --yes
-mix tamayotchi.setup --dry-run          # no external reads or writes
 mix tamayotchi.sync --yes               # files only; never provisions credentials
 
-mix tamayotchi.secrets --dry-run        # read-only 1Password/Cloudflare preflight
-mix tamayotchi.secrets --yes             # finish/retry after checking prior failures
+mix tamayotchi.secrets                 # shows the plan, then asks for confirmation
+mix tamayotchi.secrets --yes            # finish/retry after checking prior failures
 mix tamayotchi.secrets --only SECRET_KEY_BASE
 mix tamayotchi.secrets --no-provision --yes  # generate Phoenix key/import other fields only
 ```
 
 `--no-secrets` is a per-invocation escape hatch for offline work/CI, not saved
-feature state. It does not disable backups. Setup dry runs, declined diffs,
+feature state. It does not disable backups. There is no `--dry-run` option;
+removed flags are rejected rather than silently applying changes. Declined diffs,
 patching conflicts, and sync never run the queued credential task. If credentials
 fail after setup, generated files remain: fix bootstrap/access and rerun the
 secrets task instead of recreating the project.

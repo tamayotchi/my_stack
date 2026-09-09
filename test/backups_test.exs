@@ -16,24 +16,25 @@ defmodule TamayotchiStack.BackupsTest do
     refute Keyword.has_key?(TamayotchiStack.TaskInfo.setup().schema, :backups)
     assert Igniter.exists?(configured(), "rel/overlays/etc/backup.cron")
 
-    for phoenix? <- [true, false] do
-      without_sqlite = project(false) |> Setup.configure(phoenix: phoenix?)
-
-      assert Igniter.prepare_for_write(without_sqlite).issues == []
-      refute Igniter.exists?(without_sqlite, "rel/overlays/etc/backup.cron")
-    end
+    plain = test_project(app_name: :sample) |> Setup.configure(phoenix: false)
+    assert Igniter.prepare_for_write(plain).issues == []
+    refute Igniter.exists?(plain, "rel/overlays/etc/backup.cron")
   end
 
-  test "SQLite without managed Phoenix gets backup scripts but no Kamal" do
-    igniter = project() |> Setup.configure(phoenix: false)
-    assert Igniter.prepare_for_write(igniter).issues == []
-    assert Enum.all?(Backups.paths(), &Igniter.exists?(igniter, &1))
-    refute Igniter.exists?(igniter, "Dockerfile")
-    refute Igniter.exists?(igniter, "config/deploy.yml")
-    assert Enum.any?(igniter.notices, &String.contains?(&1, "no scheduler was installed"))
-    assert {:ok, manifest} = Manifest.read(igniter)
-    assert manifest[:features][:backups] == []
-    refute Igniter.changed?(igniter |> materialize() |> Sync.run())
+  test "opting out of Phoenix stops backup management but preserves existing files" do
+    original = configured() |> materialize()
+    updated = Setup.configure(original, phoenix: false)
+    assert Igniter.prepare_for_write(updated).issues == []
+
+    for path <- Backups.paths() do
+      assert Igniter.exists?(updated, path)
+      assert content(updated, path) == content(original, path)
+    end
+
+    assert {:ok, manifest} = Manifest.read(updated)
+    refute Keyword.has_key?(manifest[:features], :backups)
+    assert Enum.any?(updated.notices, &String.contains?(&1, "Existing backup files"))
+    refute Igniter.changed?(updated |> materialize() |> Sync.run())
   end
 
   test "generates a daily non-proxied backup role with independent credentials" do
@@ -268,7 +269,7 @@ defmodule TamayotchiStack.BackupsTest do
     )
   end
 
-  defp project(sqlite? \\ true) do
+  defp project do
     test_project(
       app_name: :sample,
       files: %{
@@ -277,7 +278,7 @@ defmodule TamayotchiStack.BackupsTest do
           use Mix.Project
           def project, do: [app: :sample, version: "0.1.0", deps: deps()]
           def application, do: [extra_applications: [:logger]]
-          defp deps, do: [{:phoenix, "~> 1.8"}#{if sqlite?, do: ", {:ecto_sqlite3, \"~> 0.22\"}", else: ""}]
+          defp deps, do: [{:phoenix, "~> 1.8"}, {:ecto_sqlite3, "~> 0.22"}]
         end
         """,
         "config/config.exs" => "import Config\n",
@@ -295,8 +296,10 @@ defmodule TamayotchiStack.BackupsTest do
     test_project(app_name: :sample, files: files)
   end
 
-  defp content(igniter, path),
-    do: igniter.rewrite |> Rewrite.source!(path) |> Rewrite.Source.get(:content)
+  defp content(igniter, path) do
+    igniter = Igniter.include_existing_file(igniter, path, required?: true)
+    igniter.rewrite |> Rewrite.source!(path) |> Rewrite.Source.get(:content)
+  end
 
   defp change(igniter, path, updater),
     do:

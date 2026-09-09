@@ -170,9 +170,9 @@ defmodule TamayotchiStackTest do
     assert content(disabled, ".kamal/secrets") =~ "R2_ACCESS_KEY_ID"
   end
 
-  test "can deploy without kamal-proxy or a database" do
+  test "disabling the proxy still includes SQLite persistence and backups" do
     igniter =
-      no_ecto_phoenix_project()
+      phoenix_project()
       |> Setup.configure(phoenix: true, kamal_proxy: false)
 
     deploy = content(igniter, "config/deploy.yml")
@@ -182,13 +182,14 @@ defmodule TamayotchiStackTest do
     assert deploy =~ "PHX_HOST: sample.tamayotchi.com"
     refute deploy =~ "PHX_HOST: home-server"
     refute deploy =~ "\nproxy:\n"
-    refute deploy =~ "DATABASE_PATH"
-    refute deploy =~ "volumes:"
+    assert deploy =~ "DATABASE_PATH"
+    assert deploy =~ "volumes:"
+    assert deploy =~ "  backup:"
 
-    refute Igniter.exists?(igniter, "rel/overlays/bin/migrate")
-    refute Igniter.exists?(igniter, "rel/overlays/bin/docker-entrypoint")
-    refute Igniter.exists?(igniter, "lib/sample/release.ex")
-    refute content(igniter, "Dockerfile") =~ "ENTRYPOINT"
+    assert Igniter.exists?(igniter, "rel/overlays/bin/migrate")
+    assert Igniter.exists?(igniter, "rel/overlays/bin/docker-entrypoint")
+    assert Igniter.exists?(igniter, "lib/sample/release.ex")
+    assert content(igniter, "Dockerfile") =~ "ENTRYPOINT"
 
     assert {:ok, manifest} = Manifest.parse(content(igniter, ".tamayotchi.exs"))
     assert manifest[:features][:kamal] == [proxy: false]
@@ -336,7 +337,7 @@ defmodule TamayotchiStackTest do
 
   test "setup preserves the proxy choice from an existing Kamal configuration" do
     igniter =
-      no_ecto_phoenix_project()
+      phoenix_project()
       |> Setup.configure(phoenix: true, kamal_proxy: false)
       |> materialized_project()
 
@@ -350,7 +351,7 @@ defmodule TamayotchiStackTest do
 
   test "sync adds Kamal to legacy Phoenix manifests without provisioning credentials" do
     legacy =
-      no_ecto_phoenix_project()
+      phoenix_project()
       |> Manifest.set_feature(:sample, :phoenix, true)
       |> GoatCounter.configure(:sample)
       |> materialized_project()
@@ -379,12 +380,12 @@ defmodule TamayotchiStackTest do
 
   test "legacy or partial deployments retain their proxy choice when adding derived Kamal state" do
     deployment =
-      no_ecto_phoenix_project()
+      phoenix_project()
       |> Setup.configure(phoenix: true, kamal_proxy: false)
       |> content("config/deploy.yml")
 
     legacy =
-      no_ecto_phoenix_project()
+      phoenix_project()
       |> Igniter.create_new_file("config/deploy.yml", deployment)
       |> Manifest.set_feature(:sample, :phoenix, true)
       |> materialized_project()
@@ -399,7 +400,7 @@ defmodule TamayotchiStackTest do
 
   test "opting out of Phoenix preserves existing deployment files for manual review" do
     original =
-      no_ecto_phoenix_project() |> Setup.configure(phoenix: true) |> materialized_project()
+      phoenix_project() |> Setup.configure(phoenix: true) |> materialized_project()
 
     updated = Setup.configure(original, phoenix: false)
     assert Igniter.prepare_for_write(updated).issues == []
@@ -415,11 +416,42 @@ defmodule TamayotchiStackTest do
     assert Enum.any?(updated.notices, &String.contains?(&1, "Existing Kamal files"))
   end
 
+  test "setup and sync refuse non-SQLite Phoenix repositories without changing them" do
+    for database <- [nil, :postgrex] do
+      project = no_ecto_phoenix_project()
+
+      project =
+        if database,
+          do: Igniter.Project.Deps.add_dep(project, {database, ">= 0.0.0"}),
+          else: project
+
+      original =
+        project
+        |> Manifest.set_feature(:sample, :phoenix, true)
+        |> Igniter.create_new_file("config/deploy.yml", "# existing deployment\n")
+        |> materialized_project()
+
+      for result <- [Setup.configure(original, phoenix: true), Sync.run(original)] do
+        assert Enum.any?(
+                 Igniter.prepare_for_write(result).issues,
+                 &String.contains?(to_string(&1), "Phoenix requires SQLite")
+               )
+
+        refute Igniter.changed?(result)
+        assert result.tasks == []
+        assert content(result, "config/deploy.yml") == "# existing deployment\n"
+      end
+    end
+  end
+
   test "doctor health follows desired state" do
     report = %{
       manifest: :ok,
       managed_phoenix: true,
       phoenix: true,
+      sqlite: true,
+      managed_backups: true,
+      backups: true,
       goatcounter: true,
       goatcounter_endpoint: "https://sample.goatcounter.com/count",
       expected_goatcounter_endpoint: "https://sample.goatcounter.com/count",
@@ -430,6 +462,9 @@ defmodule TamayotchiStackTest do
     }
 
     assert Doctor.healthy?(report)
+    refute Doctor.healthy?(%{report | sqlite: false})
+    refute Doctor.healthy?(%{report | backups: false})
+    refute Doctor.healthy?(%{report | managed_backups: false, backups: false})
     refute Doctor.healthy?(%{report | goatcounter: false, goatcounter_endpoint: nil})
     refute Doctor.healthy?(%{report | kamal: false})
     refute Doctor.healthy?(%{report | managed_kamal: false, kamal: false})

@@ -41,9 +41,8 @@ defmodule TamayotchiStack.Features.Kamal do
   def hostname_for_app(app_name), do: "#{slug(app_name)}.tamayotchi.com"
 
   defp configure_enabled(igniter, app_name, options) do
-    if Project.phoenix?(igniter) do
+    if Project.phoenix?(igniter) and Project.sqlite?(igniter) do
       proxy? = Keyword.fetch!(options, :proxy)
-      sqlite? = Project.sqlite?(igniter)
       base_module = Igniter.Project.Module.module_name_prefix(igniter)
 
       r2? =
@@ -59,15 +58,15 @@ defmodule TamayotchiStack.Features.Kamal do
       deploy_variants =
         for proxy <- [true, false],
             r2 <- [true, false],
-            do: deploy_config(app_name, proxy, sqlite?, r2)
+            do: deploy_config(app_name, proxy, r2)
 
       igniter
       |> put_managed_file(
         "config/deploy.yml",
-        deploy_config(app_name, proxy?, sqlite?, r2?),
+        deploy_config(app_name, proxy?, r2?),
         fn current ->
           if current in deploy_variants do
-            {:ok, deploy_config(app_name, proxy?, sqlite?, r2?)}
+            {:ok, deploy_config(app_name, proxy?, r2?)}
           else
             merge_r2_environment(current, app_name, proxy?, r2?)
           end
@@ -80,25 +79,23 @@ defmodule TamayotchiStack.Features.Kamal do
           merge_r2_secrets(current, r2?)
         end
       end)
-      |> put_managed_file("Dockerfile", dockerfile(app_name, sqlite?))
+      |> put_managed_file("Dockerfile", dockerfile(app_name))
       |> put_managed_file(".dockerignore", dockerignore())
       |> put_managed_file("rel/overlays/bin/server", server_script(app_name))
-      |> maybe_put_database_files(app_name, base_module, sqlite?)
+      |> put_database_files(app_name, base_module)
       |> Manifest.set_feature(app_name, :kamal, true, proxy: proxy?)
       |> Igniter.add_notice(secret_notice(app_name))
     else
-      Igniter.add_issue(igniter, "Kamal deployment requires Phoenix")
+      Igniter.add_issue(igniter, "Kamal deployment requires Phoenix with SQLite")
     end
   end
 
-  defp maybe_put_database_files(igniter, app_name, base_module, true) do
+  defp put_database_files(igniter, app_name, base_module) do
     igniter
     |> put_managed_file("rel/overlays/bin/migrate", migrate_script(app_name, base_module))
     |> put_managed_file("rel/overlays/bin/docker-entrypoint", docker_entrypoint())
     |> put_managed_file(Project.release_path(base_module), release_module(app_name, base_module))
   end
-
-  defp maybe_put_database_files(igniter, _app_name, _base_module, false), do: igniter
 
   defp put_managed_file(igniter, path, desired, merge \\ nil) do
     Igniter.create_or_update_file(igniter, path, desired, fn source ->
@@ -229,7 +226,7 @@ defmodule TamayotchiStack.Features.Kamal do
       String.starts_with?(contents, "#!/bin/sh\n" <> comment)
   end
 
-  defp deploy_config(app_name, proxy?, sqlite?, r2?) do
+  defp deploy_config(app_name, proxy?, r2?) do
     app = to_string(app_name)
     service = slug(app_name)
     # An SSH alias is not necessarily resolvable by browsers. Keep the public
@@ -259,14 +256,18 @@ defmodule TamayotchiStack.Features.Kamal do
       clear:
         PHX_HOST: #{hostname}
         PORT: 4000
-    #{database_environment(app, sqlite?)}#{r2_environment(app, r2?)}  secret:
+        DATABASE_PATH: /app/storage/#{app}.db
+    #{r2_environment(app, r2?)}  secret:
         - SECRET_KEY_BASE
-    #{r2_secrets(r2?)}#{database_volume(service, sqlite?)}
+    #{r2_secrets(r2?)}
+    volumes:
+      - "#{service}_storage:/app/storage"
+
     aliases:
       console: app exec --interactive --reuse "/app/bin/#{app} remote"
       shell: app exec --interactive --reuse "/bin/sh"
       logs: app logs -f
-    #{migration_alias(sqlite?)}
+      migrate: app exec --reuse "/app/bin/migrate"
     """
   end
 
@@ -308,22 +309,6 @@ defmodule TamayotchiStack.Features.Kamal do
 
   defp proxy_configuration(false, _hostname), do: ""
 
-  defp database_environment(app, true), do: "    DATABASE_PATH: /app/storage/#{app}.db\n"
-  defp database_environment(_app, false), do: ""
-
-  defp database_volume(service, true) do
-    """
-
-    volumes:
-      - "#{service}_storage:/app/storage"
-    """
-  end
-
-  defp database_volume(_service, false), do: ""
-
-  defp migration_alias(true), do: "  migrate: app exec --reuse \"/app/bin/migrate\"\n"
-  defp migration_alias(false), do: ""
-
   defp r2_environment(app, true) do
     "    R2_REGION: auto\n    R2_BUCKET: #{TamayotchiStack.Features.R2.bucket_for_app(app)}\n"
   end
@@ -358,7 +343,7 @@ defmodule TamayotchiStack.Features.Kamal do
     """
   end
 
-  defp dockerfile(app_name, sqlite?) do
+  defp dockerfile(app_name) do
     app = to_string(app_name)
 
     """
@@ -417,23 +402,16 @@ defmodule TamayotchiStack.Features.Kamal do
     ENV MIX_ENV="prod"
 
     WORKDIR "/app"
-    #{storage_setup(sqlite?)}
+    RUN mkdir -p /app/storage && chown -R nobody:nogroup /app
+
     COPY --from=builder --chown=nobody:root /app/_build/${MIX_ENV}/rel/#{app} ./
 
     USER nobody
-    #{docker_entrypoint_config(sqlite?)}
+    ENTRYPOINT ["/app/bin/docker-entrypoint"]
+
     CMD ["/app/bin/server"]
     """
   end
-
-  defp storage_setup(true) do
-    "RUN mkdir -p /app/storage && chown -R nobody:nogroup /app\n"
-  end
-
-  defp storage_setup(false), do: "RUN chown nobody:nogroup /app\n"
-
-  defp docker_entrypoint_config(true), do: "ENTRYPOINT [\"/app/bin/docker-entrypoint\"]\n"
-  defp docker_entrypoint_config(false), do: ""
 
   defp dockerignore do
     """

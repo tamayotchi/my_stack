@@ -2,11 +2,10 @@ defmodule Mix.Tasks.Tamayotchi.Secrets do
   @shortdoc "Saves missing application credentials in 1Password"
   @moduledoc """
   Plans and saves missing credentials for features in `.tamayotchi.exs`.
-  SQLite always implies Litestream backup credentials, including for older manifests.
+  Managed Phoenix + SQLite implies backup credentials, including for older manifests.
   Does not start the application or modify repository files. Setup/install run
   this automatically after accepted file changes unless --no-secrets was selected.
 
-      mix tamayotchi.secrets --dry-run
       mix tamayotchi.secrets --only SECRET_KEY_BASE
       mix tamayotchi.secrets --yes
 
@@ -44,7 +43,6 @@ defmodule Mix.Tasks.Tamayotchi.Secrets do
 
   ## Options
 
-    * `--dry-run` - read and display the plan; do not generate or write secrets
     * `--yes` / `-y` - explicitly authorize writes without a confirmation prompt
     * `--only FIELD,FIELD` - operate on named fields from enabled features
     * `--account HOST` - 1Password sign-in hostname (default: stack deployment convention)
@@ -77,7 +75,6 @@ defmodule Mix.Tasks.Tamayotchi.Secrets do
 
   @requirements ["loadpaths"]
   @switches [
-    dry_run: :boolean,
     yes: :boolean,
     only: :string,
     account: :string,
@@ -89,13 +86,15 @@ defmodule Mix.Tasks.Tamayotchi.Secrets do
 
   @impl Mix.Task
   def run(argv) do
-    case TamayotchiStack.Secrets.Op.with_session(fn -> run_in_session(argv) end) do
+    options = parse_options!(argv)
+
+    case TamayotchiStack.Secrets.Op.with_session(fn -> run_in_session(options) end) do
       {:error, reason} -> Mix.raise(reason)
       result -> result
     end
   end
 
-  defp run_in_session(argv) do
+  defp parse_options!(argv) do
     # Do not echo invalid arguments: someone may have accidentally supplied a
     # secret-value flag. The same rule applies to provider errors and JSON.
     {options, positional, invalid} =
@@ -107,6 +106,10 @@ defmodule Mix.Tasks.Tamayotchi.Secrets do
       )
     end
 
+    options
+  end
+
+  defp run_in_session(options) do
     manifest =
       case Manifest.read_file() do
         {:ok, manifest} -> manifest
@@ -152,9 +155,6 @@ defmodule Mix.Tasks.Tamayotchi.Secrets do
     Mix.shell().info(Automation.format(plan))
 
     cond do
-      options[:dry_run] ->
-        Mix.shell().info("Dry run complete. No secrets were generated or written.")
-
       not Automation.ready?(plan) ->
         {:error, reason} = Automation.apply(plan)
         Mix.raise(reason)

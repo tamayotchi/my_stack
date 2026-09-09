@@ -20,7 +20,7 @@ defmodule TamayotchiStack.Secrets do
   @metadata ~w(id version title category fields sections urls tags)
 
   # Only user-facing setup/install enqueue this post-apply command. The pure
-  # patchers, sync, declined diffs, and dry runs never contact external systems.
+  # patchers, sync, and declined diffs never contact external systems.
   def queue_setup(igniter, options) do
     with true <- Keyword.get(options, :secrets, true),
          {:ok, manifest} <- TamayotchiStack.Manifest.read(igniter),
@@ -91,12 +91,13 @@ defmodule TamayotchiStack.Secrets do
     env = Keyword.get(dependencies, :env, &System.get_env/1)
     destination = destination(manifest[:app], options)
 
-    # SQLite implies backup credentials even for a manifest created before the
-    # automatic-backup rule. This is an in-memory plan, not a manifest rewrite.
+    # Backfill older managed Phoenix + SQLite manifests, without adding backup
+    # credentials to repositories that opted out of Phoenix management.
     manifest =
-      if Keyword.get(dependencies, :sqlite?, false),
-        do: Keyword.update!(manifest, :features, &Keyword.put(&1, :backups, [])),
-        else: manifest
+      if Keyword.has_key?(manifest[:features], :phoenix) and
+           Keyword.get(dependencies, :sqlite?, false),
+         do: Keyword.update!(manifest, :features, &Keyword.put(&1, :backups, [])),
+         else: manifest
 
     flags =
       if present?(env.("OP_SERVICE_ACCOUNT_TOKEN")),

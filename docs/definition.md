@@ -94,16 +94,16 @@ Example interaction:
 ```text
 $ mix tamayotchi.new my_app
 Include Phoenix? [Y/n]
-Include SQLite database? [Y/n]
 
 Include Oban? [Y/n]
 Include Cloudflare R2? [y/N]
 Use kamal-proxy? [Y/n]
 ```
 
-Kamal is an invariant of managed Phoenix, not an independent opt-in. Plain Mix
-applications (`--no-phoenix`) get no Kamal and no proxy question. The obsolete
-`--kamal` and `--no-kamal` flags are rejected.
+SQLite, Kamal, GoatCounter, and backups are invariants of managed Phoenix, not
+independent opt-ins. Plain Mix applications (`--no-phoenix`) get no database or
+deployment scaffolding and no proxy question. Separate `--sqlite`/`--no-sqlite`,
+`--kamal`/`--no-kamal`, and backup flags are rejected.
 
 The target directory and base module are derived from the application name, and
 Git is always initialized. They are not wizard questions or public options.
@@ -322,10 +322,11 @@ application when disabled. Every Phoenix project automatically includes
 GoatCounter; there is no separate GoatCounter question, option, or manifest
 state.
 
-When Phoenix is enabled, the wizard asks whether to include SQLite and defaults
-to yes. Choosing no runs `phx.new` with `--no-ecto`. Database support is not yet
-a managed feature in the first vertical slice; when implemented, SQLite remains
-the default.
+When Phoenix is enabled, the generator always runs `phx.new --database sqlite3`.
+There is no database question, opt-out, or database-free Phoenix template. Existing
+Phoenix repositories must already have SQLite configured before setup/sync; missing
+SQLite support is an actionable conflict, not permission to install a second
+backend or migrate existing data automatically.
 
 The GoatCounter feature accepts the Mix application name, not a user-supplied
 endpoint. It constructs the HTTPS URL internally, replacing underscores with
@@ -411,10 +412,19 @@ lib/my_app/storage/r2.ex
 lib/my_app/storage/fake.ex
 ```
 
-The implemented initial storage contract supports `put_object/1` and
+The storage contract intentionally supports only `put_object/1` and
 `delete_object/1`, returning `:ok | {:error, reason}`, matching Prezio. `Storage`
 also dispatches to the configured adapter, so callers remain provider-independent.
 Get, list, signed URLs, metadata, and public URL construction are not generated.
+
+Public image galleries follow Prezio's URL-based approach: the application stores
+its image keys in its database and constructs each image URL from the configured
+`R2_PUBLIC_BASE_URL` and a validated, URL-safe key. Query the database to discover
+images; browsers fetch their bytes directly from the public domain, not through
+Phoenix. Public access/domain configuration remains an explicit operator action;
+`R2_ENDPOINT` is the authenticated S3 API origin, not a public image URL. Database
+backup buckets always remain private.
+
 The fake lives in `lib/` so it is available in development as well as tests;
 its call history and injected results are process-local for async test isolation.
 It is non-persistent and does not serve uploaded objects.
@@ -557,7 +567,7 @@ modules can append their own secret names later.
 Credential setup is automatic by default in `tamayotchi.new`, `tamayotchi.setup`,
 and the Igniter installer. They enqueue `mix tamayotchi.secrets --yes` only after
 accepted file changes; `--no-secrets` supports offline/file-only runs. Pure patchers,
-compilation, previews, declined changes, conflicts, and sync never contact providers.
+compilation, declined changes, conflicts, and sync never contact providers.
 The default does not add another wizard question or a persisted feature flag.
 
 The task reads enabled features from the literal `.tamayotchi.exs`, verifies the
@@ -588,9 +598,11 @@ Existing non-empty values and unrelated fields are preserved. All selected input
 and provider checks must pass before writes; `--only` permits deliberate partial setup.
 Access-key pairs are selected together and cannot silently combine unmatched halves.
 
-`--dry-run` reads and displays only names/actions, without generation or writes.
-`--yes` explicitly authorizes noninteractive writes. Interactive confirmation defaults
-to no. Authorization uses an existing op session or a separately supplied, vault-scoped
+The task reads and displays names/actions before asking for confirmation, which
+defaults to no. `--yes` explicitly authorizes noninteractive writes. There is no
+`--dry-run` option; removed flags are rejected before configuration or credential
+operations, including Igniter's inherited dry-run flag on setup/install/sync.
+Authorization uses an existing op session or a separately supplied, vault-scoped
 `OP_SERVICE_ACCOUNT_TOKEN`; the authenticated account hostname is always verified.
 For desktop integration, sign-in and all vault reads/writes share one persistent
 launcher parent for the entire command. Separate Erlang ports do not reliably share
@@ -626,12 +638,10 @@ Tests use fake clients and a synthetic CLI/vault, never live accounts.
 
 ## Feature: SQLite backups
 
-Backups are an invariant of SQLite, not an independent choice. There is no backup
-prompt or flag: setup and sync detect SQLite and always generate backup files.
-Phoenix automatically includes Kamal, which adds the daily role, binary installation,
-aliases, and deployment environment. Existing SQLite repositories configured without
-managed Phoenix still get backup scripts and a manual scheduling/tool-installation
-guide, not Kamal. Backups are independent of the optional R2 object-storage adapter.
+Managed Phoenix requires SQLite and always includes backups. There is no database
+or backup prompt/flag. Kamal includes the daily role, binary installation, aliases,
+and deployment environment. There is no standalone backup-installation mode for
+plain Mix apps. Backups are independent of the optional R2 object-storage adapter.
 
 Robert (`../../Nativo/Robert`) is the reference: a separate Kamal backup application
 role using the release image and shared SQLite volume, daily at 15:00 UTC, with
@@ -680,14 +690,16 @@ Initial support is one amd64 web host and one SQLite DB in a named shared
 `/app/storage` volume. Multi-host/custom layouts, unmarked existing integrations,
 and ambiguous deployment structures yield actionable conflicts. Owned files and
 marked deployment sections preserve user changes; incomplete markers are refused.
-`.tamayotchi.exs` records `backups: []` as derived SQLite state, not an independent
-opt-in. Removing this entry cannot disable backups: setup/sync reinstate it when
-SQLite is present. Doctor requires backup files whenever SQLite is detected and
-also checks the deployment integration when Kamal is managed. It does not verify
-manual scheduling, remote freshness, or recoverability. If SQLite is removed,
-existing backup artifacts, jobs, credentials, and remote data are retained for
-manual review, not deleted. The secrets command includes Litestream credentials
-whenever SQLite is detected, including for older manifests without a backup entry.
+`.tamayotchi.exs` records `backups: []` as derived Phoenix state, not an independent
+opt-in. Removing this entry cannot disable backups: setup/sync reinstate it for
+managed Phoenix. Doctor requires SQLite and the full backup/deployment integration.
+It does not verify the running scheduler, remote freshness, or recoverability.
+Removing SQLite causes setup/sync to refuse further configuration, not silently
+switch to a database-free deployment. Turning off Phoenix management preserves
+existing backup artifacts, jobs, credentials, and remote data for manual review.
+The explicit secrets command retains compatibility with older managed Phoenix +
+SQLite manifests that omitted the backup entry; it does not migrate their database
+configuration or add backup credentials after opting out of Phoenix management.
 
 The generated-project smoke test exercises a real WAL-mode SQLite database,
 multiple one-shot backups, restore, and integrity checks using the pinned binaries

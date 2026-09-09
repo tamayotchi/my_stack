@@ -58,15 +58,23 @@ defmodule TamayotchiStack.NewTest do
     end
   end
 
-  test "backups are implicit and have no independent generator flag" do
+  test "SQLite and backups are implicit and have no independent generator flags" do
     refute Enum.any?(
              New.setup_arguments(true, false, true),
              &String.contains?(&1, "backups")
            )
 
-    for flag <- ["--backups", "--no-backups"] do
+    for flag <- ["--sqlite", "--no-sqlite", "--backups", "--no-backups"] do
       assert_raise OptionParser.ParseError, fn ->
         Mix.Tasks.Tamayotchi.New.run(["backup_invalid", flag, "--yes"])
+      end
+    end
+  end
+
+  test "dry-run flags are rejected before creating a project" do
+    for flag <- ["--dry-run", "--no-dry-run", "--dry-run=true", "--dry-run=false"] do
+      assert_raise OptionParser.ParseError, fn ->
+        Mix.Tasks.Tamayotchi.New.run(["dry_run_invalid", flag, "--yes"])
       end
     end
   end

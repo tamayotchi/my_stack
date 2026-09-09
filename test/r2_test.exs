@@ -22,6 +22,16 @@ defmodule TamayotchiStack.R2Test do
     assert content(enabled, "lib/sample/storage.ex") =~ "@callback put_object"
     assert content(enabled, "lib/sample/storage/r2.ex") =~ "ExAws.Request.Req"
     assert content(enabled, "lib/sample/storage/fake.ex") =~ "Process.get"
+
+    for path <- [
+          "lib/sample/storage.ex",
+          "lib/sample/storage/r2.ex",
+          "lib/sample/storage/fake.ex"
+        ] do
+      refute content(enabled, path) =~ "get_object"
+      refute content(enabled, path) =~ "list_objects"
+    end
+
     assert content(enabled, "config/runtime.exs") =~ "tamayotchi_r2_storage ="
     assert {:ok, manifest} = Manifest.read(enabled)
     assert manifest[:features][:r2] == []

@@ -8,16 +8,18 @@ defmodule TamayotchiStack.SetupOptions do
   @spec resolve(Igniter.t(), keyword()) :: keyword()
   def resolve(igniter, cli_options) do
     # Igniter composition can discard unknown negated flags. Check raw flags too
-    # so an old --no-kamal command cannot silently enable deployment/provisioning.
-    obsolete_kamal? =
-      Keyword.has_key?(cli_options, :kamal) or
+    # so old opt-outs cannot silently enable database/deployment/provisioning work.
+    obsolete_options? =
+      Enum.any?([:sqlite, :kamal, :backups], &Keyword.has_key?(cli_options, &1)) or
         Enum.any?(
           igniter.args.argv_flags,
-          &Regex.match?(~r/^--(?:tamayotchi\.)?(?:no-)?kamal(?:=|$)/, &1)
+          &Regex.match?(~r/^--(?:tamayotchi\.)?(?:no-)?(?:sqlite|kamal|backups)(?:=|$)/, &1)
         )
 
-    if obsolete_kamal? do
-      Mix.raise("Kamal is automatic with Phoenix; remove --kamal/--no-kamal")
+    if obsolete_options? do
+      Mix.raise(
+        "SQLite, Kamal, and backups are automatic with Phoenix; remove their separate flags"
+      )
     end
 
     yes? = Keyword.get(cli_options, :yes, false)

@@ -14,9 +14,9 @@ Version `0.1.0` supports:
 - automatically including GoatCounter and Kamal whenever Phoenix is enabled
 - counting full page loads and Phoenix LiveView navigation
 - generating an app-owned Kamal deployment with optional `kamal-proxy`
-- configuring SQLite persistence and release migrations when SQLite is present
+- including SQLite persistence, release migrations, and backups with every Phoenix app
 - optional app-owned R2 storage with a replaceable adapter and network-free fake
-- automatic backup scripts whenever SQLite is present, with a daily role when using Kamal
+- automatic daily backups in a separate Kamal role
 - recording desired state in `.tamayotchi.exs`
 - explicit synchronization and diagnostics
 - explicit, missing-only credential generation/import into 1Password
@@ -83,15 +83,14 @@ The complete new-project flow is:
 
 ```text
 Include Phoenix? [Y/n]
-Include SQLite database? [Y/n]
 Include Cloudflare R2 storage? [y/N]
 Use kamal-proxy? [Y/n]
 ```
 
-Phoenix always includes GoatCounter and Kamal. Only the proxy question is asked
-for Phoenix apps; `--no-phoenix` creates a plain Mix app without Kamal. There are
-no `--kamal`/`--no-kamal` flags. Backups are always included with SQLite, without
-a separate question or opt-out flag.
+Phoenix always includes **SQLite, GoatCounter, Kamal, and daily backups**.
+R2 stays optional; the proxy question applies only to Phoenix apps.
+`--no-phoenix` creates a plain Mix app without database or deployment scaffolding.
+There are no separate SQLite, Kamal, or backup flags or prompts.
 
 Kamal uses the `home-server` SSH destination (as in `../tamayotchi/`), GHCR
 namespace `tamayotchi`, `amd64`, and 1Password account
@@ -107,8 +106,13 @@ your server. The alias centralizes the address, not security policy: SSH host-ke
 verification, authentication, and network exposure still matter. Existing deployment
 hosts are preserved on setup/sync; switching them is an explicit app-owned edit.
 
-Choosing no SQLite generates Phoenix with `--no-ecto`. Choosing no proxy
-publishes Phoenix directly on port `4000` instead of running `kamal-proxy`.
+Existing Phoenix repositories must already use SQLite. Setup/sync refuse a
+missing SQLite dependency instead of silently changing a database backend or
+migrating data. Older database-free apps need an explicit SQLite setup before
+adoption; new apps always use `phx.new --database sqlite3`.
+
+Choosing no proxy publishes Phoenix directly on port `4000` instead of running
+`kamal-proxy`; SQLite and backups remain included.
 `PHX_HOST` remains `<app-slug>.tamayotchi.com` in either mode, separate from the
 SSH alias. Configure real DNS/public access yourself; no Cloudflare Tunnel,
 loopback-only binding, or firewall policy is installed by this host-name change.
@@ -145,8 +149,17 @@ MyApp.Storage.delete_object(%{key: "documents/example.txt"})
 Both operations return `:ok | {:error, reason}`. To use S3 or another provider,
 implement `MyApp.Storage` and set `config :my_app, :storage, adapter: MyApp.Storage.S3`
 in your application configuration. There is no Tamayotchi runtime dependency.
-Get/list operations, signed URLs, upload restrictions, and public URL construction
-are intentionally left to the application.
+No `get_object` or `list_objects` API is generated. For public images, follow Prezio:
+
+```text
+Upload → R2 put_object → save the image key in your database
+Gallery → query database keys → render R2_PUBLIC_BASE_URL + "/" + key
+Browser → fetch the image directly from Cloudflare
+```
+
+Use application-owned, validated URL-safe keys. Image policies and URL construction
+belong to the app. Configure the public domain explicitly; the authenticated
+`R2_ENDPOINT` is not a public image URL, and backup buckets must stay private.
 
 Production requires `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and
 `R2_ACCOUNT_ID` (or an explicit HTTPS `R2_ENDPOINT`). `R2_REGION` defaults to `auto`.
@@ -176,8 +189,8 @@ management; it does not uninstall dependencies/code or remove deployment credent
 ## SQLite always includes backups
 
 Based on **Robert's** Litestream/Supercronic deployment (no backup setup was found
-in Prezio). Whenever SQLite is detected, backup scripts and credentials are included
-automatically, independently of application R2 storage.
+in Prezio). Every managed Phoenix app includes SQLite, backup scripts, and backup
+credentials, independently of optional application R2 storage.
 
 ```sh
 mix tamayotchi.new my_app --yes
@@ -213,15 +226,10 @@ Daily backups can lose changes since the last successful job—normally up to
 Doctor checks installation, not remote backup health. The initial supported layout
 is one amd64 web host and one SQLite database on the shared `/app/storage` volume.
 
-For existing SQLite repositories configured with `--no-phoenix`, no Kamal is added.
-The same backup/restore scripts and recovery guide are generated, but runtime tools
-and scheduling remain manual. Follow
-`docs/sqlite-backups.md` to install Litestream/Supercronic, supply the SQLite path
-and credentials, and configure the production schedule yourself.
-
-The manifest's `backups: []` entry is derived from SQLite detection; removing it
-does not disable backups, and sync reinstates it. If SQLite is later removed,
-existing files, deployed jobs, and remote backup data are retained for manual review.
+The manifest's `backups: []` entry is derived from Phoenix; removing it does not
+disable backups, and sync reinstates it. Removing SQLite makes a managed Phoenix
+app unsupported until corrected; it does not remove backup data. `--no-phoenix`
+stops management without deleting existing files, deployed jobs, or credentials.
 
 ## Automatic credentials in 1Password
 
@@ -260,15 +268,17 @@ never copied to the app item or deployment. No extra per-project command is need
 mix tamayotchi.new my_app --yes
 # Offline/file-only escape hatch:
 mix tamayotchi.setup --no-secrets --yes
-# Preview or finish credential setup separately when needed:
-mix tamayotchi.secrets --dry-run
-mix tamayotchi.secrets --yes
+# Finish credential setup separately when needed:
+mix tamayotchi.secrets                 # shows the plan, then asks for confirmation
+mix tamayotchi.secrets --yes            # explicitly accept without prompting
 ```
 
-Credentials run only after accepted setup changes. `sync` and setup dry runs never
-contact providers. Secret-task dry runs perform read-only preflight. No values
-appear in arguments, logs, temporary files, or repository diffs. Durable 1Password
-markers prevent automatic token reissuance after interrupted operations; inspect
+Credentials run only after accepted setup changes. `sync`, declined setup changes,
+and setup with `--no-secrets` never contact providers. The standalone secrets task
+checks inputs and displays the plan before asking for confirmation. There is no
+`--dry-run` option. No values appear in arguments, logs, temporary files, or
+repository diffs. Durable 1Password markers prevent automatic token reissuance
+after interrupted operations; inspect
 both systems after an ambiguous failure. There is no automatic rotation or rollback.
 
 See [`docs/secrets.md`](docs/secrets.md) for bootstrap instructions, manual imports,

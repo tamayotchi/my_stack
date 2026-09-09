@@ -3,7 +3,25 @@ defmodule TamayotchiStack.SecretsTaskTest do
 
   alias Mix.Tasks.Tamayotchi.Secrets, as: Task
 
-  test "the CLI previews, confirms, saves, verifies, and reruns without real vault access" do
+  test "removed dry-run flags are rejected before opening a provider session" do
+    previous_path = System.get_env("PATH")
+    System.put_env("PATH", "")
+    on_exit(fn -> System.put_env("PATH", previous_path) end)
+
+    for flag <- [
+          "--dry-run",
+          "--no-dry-run",
+          "--dry-run=true",
+          "--dry-run=false",
+          "--tamayotchi.dry-run"
+        ] do
+      assert_raise Mix.Error, ~r/Invalid secrets options/, fn ->
+        Task.run([flag, "--yes"])
+      end
+    end
+  end
+
+  test "the CLI confirms, saves, verifies, and reruns without real vault access" do
     directory = Path.join(System.tmp_dir!(), "secrets-cli-#{System.unique_integer([:positive])}")
     File.mkdir_p!(Path.join(directory, "tools"))
     previous_path = System.get_env("PATH")
@@ -88,10 +106,6 @@ defmodule TamayotchiStack.SecretsTaskTest do
 
     Mix.Project.in_project(:sample, directory, fn _ ->
       before_files = File.ls!() |> Enum.sort()
-      Task.run(["--dry-run", "--only", "SECRET_KEY_BASE"])
-      assert messages() =~ "Dry run complete"
-      refute File.exists?(state_path)
-
       send(self(), {:mix_shell_input, :prompt, "n"})
       Task.run(["--only", "SECRET_KEY_BASE"])
       assert messages() =~ "Cancelled"
@@ -113,7 +127,10 @@ defmodule TamayotchiStack.SecretsTaskTest do
 
       # SQLite implies these fields even though the fixture's manifest predates
       # automatic backups and only records Phoenix.
-      Task.run(["--dry-run"])
+      assert_raise Mix.Error, ~r/Credential setup is incomplete/, fn ->
+        Task.run(["--no-provision"])
+      end
+
       output = messages()
       assert output =~ "LITESTREAM_ACCESS_KEY_ID: MISSING"
       assert output =~ "LITESTREAM_SECRET_ACCESS_KEY: MISSING"

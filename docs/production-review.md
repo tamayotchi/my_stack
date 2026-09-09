@@ -5,7 +5,8 @@ amd64, Phoenix/SQLite/Kamal 2 application. No deployment or registry image
 publication was performed. This is not certification of a running production service.
 
 The SQLite/no-Kamal generation check below records the earlier optional-Kamal
-behavior. Kamal is now required with Phoenix; plain Mix apps still omit it.
+behavior. SQLite, Kamal, and backups are now required with Phoenix; plain Mix apps
+omit that scaffolding. Database-free Phoenix generation is no longer supported.
 Current setup/sync behavior is documented in the main README.
 
 ## Review fixes
