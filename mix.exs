@@ -19,7 +19,7 @@ defmodule TamayotchiStack.MixProject do
   end
 
   def application do
-    [extra_applications: [:logger, :eex]]
+    [extra_applications: [:logger, :eex, :crypto, :ssl]]
   end
 
   def cli do
@@ -29,13 +29,14 @@ defmodule TamayotchiStack.MixProject do
   defp deps do
     [
       {:igniter, "~> 0.8"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4"},
+      {:req, "~> 0.5"}
     ]
   end
 
   defp aliases do
     [
-      precommit: ["compile --warning-as-errors", "format --check-formatted", "test"]
+      precommit: ["compile --warnings-as-errors", "format --check-formatted", "test"]
     ]
   end
 

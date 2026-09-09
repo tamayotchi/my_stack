@@ -5,30 +5,35 @@ defmodule TamayotchiStack.BackupsTest do
 
   alias TamayotchiStack.Doctor
   alias TamayotchiStack.Features.Backups
+  alias TamayotchiStack.Features.Kamal
   alias TamayotchiStack.Manifest
   alias TamayotchiStack.Setup
   alias TamayotchiStack.SetupOptions
   alias TamayotchiStack.Sync
 
-  test "backups default off and require SQLite plus Kamal" do
-    refute SetupOptions.resolve(project(), yes: true)[:backups]
-    disabled = Setup.configure(project(), phoenix: true, kamal: true, kamal_proxy: true)
-    refute Igniter.exists?(disabled, "rel/overlays/etc/backup.cron")
-    refute content(disabled, "config/deploy.yml") =~ "LITESTREAM"
-    refute content(disabled, "Dockerfile") =~ "litestream"
+  test "SQLite always includes backups without a separate option" do
+    refute Keyword.has_key?(SetupOptions.resolve(project(), yes: true), :backups)
+    refute Keyword.has_key?(TamayotchiStack.TaskInfo.setup().schema, :backups)
+    assert Igniter.exists?(configured(), "rel/overlays/etc/backup.cron")
 
-    for {sqlite?, kamal?} <- [{false, true}, {true, false}, {false, false}] do
-      invalid =
-        project(sqlite?)
-        |> Setup.configure(phoenix: true, kamal: kamal?, kamal_proxy: true, backups: true)
+    for phoenix? <- [true, false] do
+      without_sqlite = project(false) |> Setup.configure(phoenix: phoenix?)
 
-      assert Enum.any?(
-               Igniter.prepare_for_write(invalid).issues,
-               &String.contains?(to_string(&1), "--backups requires")
-             )
-
-      refute Igniter.exists?(invalid, "rel/overlays/etc/backup.cron")
+      assert Igniter.prepare_for_write(without_sqlite).issues == []
+      refute Igniter.exists?(without_sqlite, "rel/overlays/etc/backup.cron")
     end
+  end
+
+  test "SQLite without managed Phoenix gets backup scripts but no Kamal" do
+    igniter = project() |> Setup.configure(phoenix: false)
+    assert Igniter.prepare_for_write(igniter).issues == []
+    assert Enum.all?(Backups.paths(), &Igniter.exists?(igniter, &1))
+    refute Igniter.exists?(igniter, "Dockerfile")
+    refute Igniter.exists?(igniter, "config/deploy.yml")
+    assert Enum.any?(igniter.notices, &String.contains?(&1, "no scheduler was installed"))
+    assert {:ok, manifest} = Manifest.read(igniter)
+    assert manifest[:features][:backups] == []
+    refute Igniter.changed?(igniter |> materialize() |> Sync.run())
   end
 
   test "generates a daily non-proxied backup role with independent credentials" do
@@ -40,12 +45,28 @@ defmodule TamayotchiStack.BackupsTest do
     refute Igniter.Project.Deps.has_dep?(igniter, :ex_aws)
 
     deploy = content(igniter, "config/deploy.yml")
-    assert deploy =~ "  backup:\n    hosts:\n      - 192.168.1.39\n    proxy: false"
+    assert Backups.credentials_scoped?(deploy)
+
+    refute Backups.credentials_scoped?(
+             String.replace(
+               deploy,
+               "  secret:\n",
+               "  secret:\n    - LITESTREAM_SECRET_ACCESS_KEY\n"
+             )
+           )
+
+    assert deploy =~ "  web:\n    - home-server"
+    assert deploy =~ "  backup:\n    hosts:\n      - home-server\n    proxy: false"
+    refute deploy =~ "192.168.1.39"
     assert deploy =~ "LITESTREAM_BUCKET_NAME: sample-db-backups"
     assert deploy =~ "LITESTREAM_BUCKET_PATH: sample-production-v0.5"
     assert deploy =~ "LITESTREAM_REGION: auto"
     assert deploy =~ "TZ: UTC"
     assert deploy =~ "backup-restore:"
+    assert deploy =~ "      secret:\n        - LITESTREAM_ENDPOINT"
+    [_, global_env] = Regex.run(~r/^env:\n(.*?)(?=^\S|\z)/ms, deploy)
+    refute global_env =~ "LITESTREAM_ACCESS_KEY_ID"
+    refute global_env =~ "LITESTREAM_SECRET_ACCESS_KEY"
 
     assert content(igniter, "rel/overlays/etc/backup.cron") =~
              "0 15 * * * /app/bin/litestream-backup"
@@ -62,23 +83,43 @@ defmodule TamayotchiStack.BackupsTest do
   test "setup and sync are idempotent with and without R2 and proxy" do
     for r2? <- [false, true], proxy? <- [false, true] do
       initial = configured(r2: r2?, kamal_proxy: proxy?) |> materialize()
-      assert SetupOptions.resolve(initial, yes: true)[:backups]
+      refute Keyword.has_key?(SetupOptions.resolve(initial, yes: true), :backups)
       synced = Sync.run(initial)
       assert Igniter.prepare_for_write(synced).issues == []
       refute Igniter.changed?(synced)
     end
   end
 
+  test "sync preserves legacy IPs, custom hosts, and public URLs instead of changing destinations" do
+    for host <- ["192.168.1.39", "custom-server"],
+        proxy? <- [true, false],
+        r2? <- [true, false] do
+      initial =
+        configured(kamal_proxy: proxy?, r2: r2?)
+        |> change("config/deploy.yml", fn text ->
+          text
+          |> String.replace("home-server", host)
+          |> String.replace("PHX_HOST: sample.tamayotchi.com", "PHX_HOST: existing.example.com")
+        end)
+        |> materialize()
+
+      synced = Sync.run(initial)
+      assert issues(synced) == ""
+      assert content(synced, "config/deploy.yml") == content(initial, "config/deploy.yml")
+      refute Igniter.changed?(synced)
+    end
+  end
+
   test "adopts an existing managed deployment and preserves app-owned changes" do
-    initial = project() |> Setup.configure(phoenix: true, kamal: true, kamal_proxy: true)
+    initial = project() |> Kamal.configure(:sample, true, proxy: true)
 
     initial =
       initial
-      |> change("config/deploy.yml", &String.replace(&1, "192.168.1.39", "192.168.1.50"))
+      |> change("config/deploy.yml", &String.replace(&1, "home-server", "192.168.1.50"))
       |> materialize()
 
     enabled =
-      initial |> Setup.configure(phoenix: true, kamal: true, kamal_proxy: true, backups: true)
+      initial |> Setup.configure(phoenix: true, kamal_proxy: true)
 
     assert Igniter.prepare_for_write(enabled).issues == []
     assert content(enabled, "config/deploy.yml") =~ "  backup:\n    hosts:\n      - 192.168.1.50"
@@ -99,11 +140,57 @@ defmodule TamayotchiStack.BackupsTest do
     assert content(synced, "rel/overlays/etc/backup.cron") =~ "0 3 * * *"
   end
 
+  test "legacy global backup credentials are migrated to the backup role without losing other settings" do
+    initial = configured(r2: true)
+
+    role_secret =
+      "      secret:\n        - LITESTREAM_ENDPOINT\n        - LITESTREAM_ACCESS_KEY_ID\n        - LITESTREAM_SECRET_ACCESS_KEY\n"
+
+    legacy_secret =
+      "    # tamayotchi_stack backups:secret begin\n    - LITESTREAM_ENDPOINT\n    - LITESTREAM_ACCESS_KEY_ID\n    - LITESTREAM_SECRET_ACCESS_KEY\n    # tamayotchi_stack backups:secret end\n"
+
+    old =
+      initial
+      |> change("config/deploy.yml", fn text ->
+        text
+        |> String.replace(role_secret, "")
+        |> String.replace("  secret:\n", "  secret:\n" <> legacy_secret)
+        |> String.replace("sample-db-backups", "my-private-backups")
+      end)
+      |> materialize()
+
+    migrated = Sync.run(old)
+    assert issues(migrated) == ""
+    text = content(migrated, "config/deploy.yml")
+    assert text =~ role_secret
+    refute text =~ legacy_secret
+    assert text =~ "my-private-backups"
+    assert text =~ "R2_ACCESS_KEY_ID"
+    refute Igniter.changed?(migrated |> materialize() |> Sync.run())
+
+    unsafe =
+      old
+      |> change(
+        "config/deploy.yml",
+        &String.replace(
+          &1,
+          legacy_secret,
+          String.replace(
+            legacy_secret,
+            "    - LITESTREAM_ENDPOINT",
+            "    - CUSTOM_SECRET\n    - LITESTREAM_ENDPOINT"
+          )
+        )
+      )
+
+    assert issues(Sync.run(unsafe)) =~ "custom changes"
+  end
+
   test "R2 can be added after backups without erasing the backup integration" do
     enabled =
       configured()
       |> materialize()
-      |> Setup.configure(phoenix: true, r2: true, kamal: true, kamal_proxy: true, backups: true)
+      |> Setup.configure(phoenix: true, r2: true, kamal_proxy: true)
 
     assert Igniter.prepare_for_write(enabled).issues == []
     assert content(enabled, "config/deploy.yml") =~ "R2_ACCESS_KEY_ID"
@@ -115,15 +202,15 @@ defmodule TamayotchiStack.BackupsTest do
     manual =
       project()
       |> Igniter.create_new_file("rel/overlays/etc/litestream.yml", "# my manual replica\n")
-      |> Setup.configure(phoenix: true, kamal: true, kamal_proxy: true, backups: true)
+      |> Setup.configure(phoenix: true, kamal_proxy: true)
 
     assert issues(manual) =~ "Refusing to overwrite unmanaged rel/overlays/etc/litestream.yml"
 
-    initial = project() |> Setup.configure(phoenix: true, kamal: true, kamal_proxy: true)
+    initial = project() |> Kamal.configure(:sample, true, proxy: true)
 
     for {path, update} <- [
           {"config/deploy.yml",
-           &String.replace(&1, "    - 192.168.1.39", "    - 192.168.1.39\n    - 192.168.1.40")},
+           &String.replace(&1, "    - home-server", "    - home-server\n    - second-server")},
           {"config/deploy.yml",
            &String.replace(&1, "  web:", "  backup:\n    - other.example.com\n  web:")},
           {"Dockerfile", &String.replace(&1, "USER nobody", "USER app")},
@@ -136,7 +223,7 @@ defmodule TamayotchiStack.BackupsTest do
              "DATABASE_PATH: /other/sample.db"
            )}
         ] do
-      conflict = initial |> change(path, update) |> Backups.configure(:sample, true, true)
+      conflict = initial |> change(path, update) |> Backups.configure(:sample, true)
       assert issues(conflict) =~ "Cannot safely add SQLite backups"
     end
   end
@@ -149,20 +236,17 @@ defmodule TamayotchiStack.BackupsTest do
         &String.replace(&1, "# tamayotchi_stack backups:role end", "# missing end")
       )
 
-    assert issues(Backups.configure(initial, :sample, true, true)) =~ "incomplete or duplicate"
+    assert issues(Backups.configure(initial, :sample, true)) =~ "incomplete or duplicate"
   end
 
-  test "opting out does not delete existing schedules or remote data" do
-    disabled =
-      configured()
-      |> materialize()
-      |> Setup.configure(phoenix: true, kamal: true, kamal_proxy: true, backups: false)
-
-    assert {:ok, manifest} = Manifest.read(disabled)
-    refute Keyword.has_key?(manifest[:features], :backups)
-    assert Igniter.exists?(disabled, "rel/overlays/etc/backup.cron")
-    assert content(disabled, "config/deploy.yml") =~ "  backup:"
-    assert Enum.any?(disabled.notices, &String.contains?(&1, "not an existing backup schedule"))
+  test "an older manifest without backups cannot disable the SQLite invariant" do
+    old = configured() |> Manifest.set_feature(:sample, :backups, false) |> materialize()
+    updated = Sync.run(old)
+    assert Igniter.prepare_for_write(updated).issues == []
+    assert {:ok, manifest} = Manifest.read(updated)
+    assert manifest[:features][:backups] == []
+    assert Igniter.exists?(updated, "rel/overlays/etc/backup.cron")
+    assert content(updated, "config/deploy.yml") =~ "  backup:"
   end
 
   test "manifest rejects backup secrets and doctor requires actual installation" do
@@ -180,7 +264,7 @@ defmodule TamayotchiStack.BackupsTest do
   defp configured(options \\ []) do
     Setup.configure(
       project(),
-      Keyword.merge([phoenix: true, kamal: true, kamal_proxy: true, backups: true], options)
+      Keyword.merge([phoenix: true, kamal_proxy: true], options)
     )
   end
 

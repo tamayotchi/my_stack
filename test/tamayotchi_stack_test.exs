@@ -39,15 +39,15 @@ defmodule TamayotchiStackTest do
     refute Keyword.has_key?(manifest[:features], :goatcounter)
   end
 
-  test "configures Kamal from application conventions" do
-    igniter =
-      phoenix_project()
-      |> Setup.configure(phoenix: true, kamal: true, kamal_proxy: true)
+  test "Phoenix always configures Kamal from application conventions" do
+    igniter = phoenix_project() |> Setup.configure(phoenix: true)
 
     deploy = content(igniter, "config/deploy.yml")
     assert deploy =~ "service: sample"
     assert deploy =~ "image: tamayotchi/sample"
-    assert deploy =~ "- 192.168.1.39"
+    assert deploy =~ "registry:\n  server: ghcr.io\n  username: tamayotchi"
+    refute Igniter.exists?(igniter, ".github/workflows/deploy.yml")
+    assert deploy =~ "- home-server"
     assert deploy =~ "host: sample.tamayotchi.com"
     assert deploy =~ "ssl: false"
     assert deploy =~ "DATABASE_PATH: /app/storage/sample.db"
@@ -66,10 +66,56 @@ defmodule TamayotchiStackTest do
     assert manifest[:features][:kamal] == [proxy: true]
   end
 
+  test "Kamal release paths follow module names rather than numeric OTP app segments" do
+    mix_exs = """
+    defmodule Sample123.MixProject do
+      use Mix.Project
+      def project, do: [app: :sample_123, version: "0.1.0", deps: deps()]
+      def application, do: [extra_applications: [:logger]]
+      defp deps, do: [{:phoenix, "~> 1.8"}, {:ecto_sqlite3, "~> 0.22"}]
+    end
+    """
+
+    configured =
+      phoenix_project(%{"mix.exs" => mix_exs})
+      |> Setup.configure(phoenix: true, kamal_proxy: false)
+
+    assert Igniter.prepare_for_write(configured).issues == []
+    assert content(configured, "lib/sample123/release.ex") =~ "defmodule Sample123.Release"
+    refute Igniter.exists?(configured, "lib/sample_123/release.ex")
+    assert TamayotchiStack.Project.release_path(Sample123) == "lib/sample123/release.ex"
+    synced = configured |> materialized_project() |> Sync.run()
+    assert Igniter.prepare_for_write(synced).issues == []
+    refute Igniter.changed?(synced)
+  end
+
+  test "GHCR defaults do not silently switch existing registries" do
+    configured = phoenix_project() |> Setup.configure(phoenix: true)
+
+    deployment = content(configured, "config/deploy.yml")
+
+    for existing <- [
+          String.replace(deployment, "  server: ghcr.io\n", ""),
+          String.replace(deployment, "ghcr.io", "registry.example.com")
+        ] do
+      updated =
+        Igniter.update_file(
+          configured,
+          "config/deploy.yml",
+          &Rewrite.Source.update(&1, :content, existing)
+        )
+
+      synced = updated |> materialized_project() |> Sync.run()
+      assert Igniter.prepare_for_write(synced).issues == []
+      assert content(synced, "config/deploy.yml") == existing
+      refute Igniter.changed?(synced)
+    end
+  end
+
   test "R2 integrates with Kamal only when selected" do
     enabled =
       phoenix_project()
-      |> Setup.configure(phoenix: true, r2: true, kamal: true, kamal_proxy: true)
+      |> Setup.configure(phoenix: true, r2: true)
 
     assert Igniter.prepare_for_write(enabled).issues == []
     assert content(enabled, "config/deploy.yml") =~ "R2_BUCKET: sample"
@@ -81,7 +127,7 @@ defmodule TamayotchiStackTest do
     assert content(enabled, "Dockerfile") =~ "COPY config/runtime.exs config/"
     refute Igniter.changed?(enabled |> materialized_project() |> Sync.run())
 
-    disabled = phoenix_project() |> Setup.configure(phoenix: true, kamal: true, kamal_proxy: true)
+    disabled = phoenix_project() |> Setup.configure(phoenix: true)
     refute content(disabled, "config/deploy.yml") =~ "R2_"
     refute content(disabled, ".kamal/secrets") =~ "R2_"
   end
@@ -89,7 +135,7 @@ defmodule TamayotchiStackTest do
   test "R2 preserves customized Kamal values and secret references" do
     initial =
       phoenix_project()
-      |> Setup.configure(phoenix: true, kamal: true, kamal_proxy: true)
+      |> Setup.configure(phoenix: true)
       |> Igniter.update_file("config/deploy.yml", fn source ->
         text = Rewrite.Source.get(source, :content)
 
@@ -108,7 +154,7 @@ defmodule TamayotchiStackTest do
       end)
       |> materialized_project()
 
-    enabled = Setup.configure(initial, phoenix: true, r2: true, kamal: true, kamal_proxy: true)
+    enabled = Setup.configure(initial, phoenix: true, r2: true)
     assert Igniter.prepare_for_write(enabled).issues == []
     assert content(enabled, "config/deploy.yml") =~ "R2_BUCKET: custom-bucket"
     assert content(enabled, "config/deploy.yml") =~ "CUSTOM_ENV: custom"
@@ -118,7 +164,7 @@ defmodule TamayotchiStackTest do
     disabled =
       enabled
       |> materialized_project()
-      |> Setup.configure(phoenix: true, r2: false, kamal: true, kamal_proxy: true)
+      |> Setup.configure(phoenix: true, r2: false)
 
     assert content(disabled, "config/deploy.yml") =~ "R2_ACCESS_KEY_ID"
     assert content(disabled, ".kamal/secrets") =~ "R2_ACCESS_KEY_ID"
@@ -127,11 +173,14 @@ defmodule TamayotchiStackTest do
   test "can deploy without kamal-proxy or a database" do
     igniter =
       no_ecto_phoenix_project()
-      |> Setup.configure(phoenix: true, kamal: true, kamal_proxy: false)
+      |> Setup.configure(phoenix: true, kamal_proxy: false)
 
     deploy = content(igniter, "config/deploy.yml")
     assert deploy =~ "proxy: false"
     assert deploy =~ ~s(publish: "4000:4000")
+    assert deploy =~ "hosts:\n      - home-server"
+    assert deploy =~ "PHX_HOST: sample.tamayotchi.com"
+    refute deploy =~ "PHX_HOST: home-server"
     refute deploy =~ "\nproxy:\n"
     refute deploy =~ "DATABASE_PATH"
     refute deploy =~ "volumes:"
@@ -146,7 +195,7 @@ defmodule TamayotchiStackTest do
   end
 
   test "Kamal configuration and sync are idempotent" do
-    options = [phoenix: true, kamal: true, kamal_proxy: true]
+    options = [phoenix: true, kamal_proxy: true]
 
     first_pass = phoenix_project() |> Setup.configure(options)
     materialized = materialized_project(first_pass)
@@ -203,7 +252,7 @@ defmodule TamayotchiStackTest do
              ~s(window.goatcounter.endpoint = "https://sample.goatcounter.com/count";)
 
     assert {:ok, manifest} = Manifest.parse(content(updated, ".tamayotchi.exs"))
-    assert manifest[:features] == [phoenix: []]
+    assert manifest[:features] == [backups: [], kamal: [proxy: true], phoenix: []]
   end
 
   test "does not overwrite an unmanaged GoatCounter wrapper" do
@@ -219,41 +268,151 @@ defmodule TamayotchiStackTest do
            )
   end
 
-  test "rejects invalid GoatCounter endpoints" do
-    assert {:error, _reason} = GoatCounter.validate_endpoint("http://example.com/count")
-    assert {:error, _reason} = GoatCounter.validate_endpoint("https://example.com/not-count")
-    assert {:error, _reason} = GoatCounter.validate_endpoint("https://invalid_host/count")
-    assert :ok = GoatCounter.validate_endpoint("https://example.com/count")
+  test "GoatCounter derives HTTPS endpoints directly from application names" do
+    for app <- [:price_tracker, "price_tracker", "Price_Tracker"] do
+      assert GoatCounter.endpoint_for_app(app) == "https://price-tracker.goatcounter.com/count"
+
+      igniter = phoenix_project() |> GoatCounter.configure(app)
+      assert Igniter.prepare_for_write(igniter).issues == []
+
+      assert content(igniter, "assets/js/goatcounter.js") =~
+               ~s(window.goatcounter.endpoint = "https://price-tracker.goatcounter.com/count";)
+    end
   end
 
-  test "a non-Phoenix setup does not generate GoatCounter files" do
-    igniter = test_project(app_name: :sample) |> Setup.configure(phoenix: false)
+  test "GoatCounter still refuses projects without Phoenix assets" do
+    igniter = test_project(app_name: :sample) |> GoatCounter.configure(:sample)
+
+    assert Enum.any?(
+             Igniter.prepare_for_write(igniter).issues,
+             &String.contains?(to_string(&1), "GoatCounter requires a Phoenix project")
+           )
 
     refute Igniter.exists?(igniter, "assets/js/goatcounter.js")
-    refute Igniter.exists?(igniter, "assets/vendor/goatcounter.js")
   end
 
-  test "setup keeps GoatCounter implicit and defaults to Kamal" do
+  test "a non-Phoenix setup does not generate GoatCounter or Kamal files" do
+    igniter = test_project(app_name: :sample) |> Setup.configure(phoenix: false)
+
+    for path <- [
+          "assets/js/goatcounter.js",
+          "assets/vendor/goatcounter.js",
+          "Dockerfile",
+          "config/deploy.yml",
+          ".kamal/secrets"
+        ] do
+      refute Igniter.exists?(igniter, path)
+    end
+
+    assert {:ok, manifest} = Manifest.read(igniter)
+    refute Keyword.has_key?(manifest[:features], :kamal)
+    refute Igniter.changed?(igniter |> materialized_project() |> Sync.run())
+  end
+
+  test "setup keeps GoatCounter and Kamal implicit with Phoenix" do
     resolved = phoenix_project() |> SetupOptions.resolve(phoenix: true, yes: true)
 
     assert resolved[:phoenix]
     refute Keyword.has_key?(resolved, :goatcounter)
     refute Keyword.has_key?(resolved, :goatcounter_endpoint)
-    assert resolved[:kamal]
+    refute Keyword.has_key?(resolved, :kamal)
+    refute Keyword.has_key?(TamayotchiStack.TaskInfo.setup().schema, :kamal)
     assert resolved[:kamal_proxy]
+
+    plain = test_project(app_name: :sample) |> SetupOptions.resolve(phoenix: false, yes: true)
+    refute Keyword.has_key?(plain, :kamal)
+    refute Keyword.has_key?(plain, :kamal_proxy)
+
+    for proxy? <- [true, false] do
+      assert_raise Mix.Error, ~r/requires Phoenix/, fn ->
+        SetupOptions.resolve(test_project(app_name: :sample),
+          phoenix: false,
+          proxy: proxy?,
+          yes: true
+        )
+      end
+    end
   end
 
   test "setup preserves the proxy choice from an existing Kamal configuration" do
     igniter =
       no_ecto_phoenix_project()
-      |> Setup.configure(phoenix: true, kamal: true, kamal_proxy: false)
+      |> Setup.configure(phoenix: true, kamal_proxy: false)
       |> materialized_project()
 
     resolved = SetupOptions.resolve(igniter, yes: true)
 
     assert resolved[:phoenix]
-    assert resolved[:kamal]
+    refute Keyword.has_key?(resolved, :kamal)
     refute resolved[:kamal_proxy]
+    refute Igniter.changed?(Setup.configure(igniter, phoenix: true))
+  end
+
+  test "sync adds Kamal to legacy Phoenix manifests without provisioning credentials" do
+    legacy =
+      no_ecto_phoenix_project()
+      |> Manifest.set_feature(:sample, :phoenix, true)
+      |> GoatCounter.configure(:sample)
+      |> materialized_project()
+
+    refute Igniter.exists?(legacy, "config/deploy.yml")
+    synced = Sync.run(legacy)
+    assert Igniter.prepare_for_write(synced).issues == []
+    assert Igniter.exists?(synced, "config/deploy.yml")
+    assert {:ok, manifest} = Manifest.read(synced)
+    assert manifest[:features][:kamal] == [proxy: true]
+    assert synced.tasks == []
+    refute Igniter.changed?(synced |> materialized_project() |> Sync.run())
+
+    conflict =
+      legacy
+      |> Igniter.create_new_file("Dockerfile", "FROM custom/image\n")
+      |> Sync.run()
+
+    assert Enum.any?(
+             Igniter.prepare_for_write(conflict).issues,
+             &String.contains?(to_string(&1), "Refusing to overwrite unmanaged Dockerfile")
+           )
+
+    assert conflict.tasks == []
+  end
+
+  test "legacy or partial deployments retain their proxy choice when adding derived Kamal state" do
+    deployment =
+      no_ecto_phoenix_project()
+      |> Setup.configure(phoenix: true, kamal_proxy: false)
+      |> content("config/deploy.yml")
+
+    legacy =
+      no_ecto_phoenix_project()
+      |> Igniter.create_new_file("config/deploy.yml", deployment)
+      |> Manifest.set_feature(:sample, :phoenix, true)
+      |> materialized_project()
+
+    refute SetupOptions.resolve(legacy, yes: true)[:kamal_proxy]
+    synced = Sync.run(legacy)
+    assert Igniter.prepare_for_write(synced).issues == []
+    assert content(synced, "config/deploy.yml") == deployment
+    assert {:ok, manifest} = Manifest.read(synced)
+    assert manifest[:features][:kamal] == [proxy: false]
+  end
+
+  test "opting out of Phoenix preserves existing deployment files for manual review" do
+    original =
+      no_ecto_phoenix_project() |> Setup.configure(phoenix: true) |> materialized_project()
+
+    updated = Setup.configure(original, phoenix: false)
+    assert Igniter.prepare_for_write(updated).issues == []
+
+    for path <- ["Dockerfile", "config/deploy.yml", ".kamal/secrets", "rel/overlays/bin/server"] do
+      assert content(updated, path) == content(original, path)
+    end
+
+    assert {:ok, manifest} = Manifest.read(updated)
+    refute Keyword.has_key?(manifest[:features], :phoenix)
+    refute Keyword.has_key?(manifest[:features], :kamal)
+    assert updated.tasks == []
+    assert Enum.any?(updated.notices, &String.contains?(&1, "Existing Kamal files"))
   end
 
   test "doctor health follows desired state" do
@@ -273,6 +432,7 @@ defmodule TamayotchiStackTest do
     assert Doctor.healthy?(report)
     refute Doctor.healthy?(%{report | goatcounter: false, goatcounter_endpoint: nil})
     refute Doctor.healthy?(%{report | kamal: false})
+    refute Doctor.healthy?(%{report | managed_kamal: false, kamal: false})
     refute Doctor.healthy?(%{report | kamal_proxy: false})
     refute Doctor.healthy?(Map.merge(report, %{managed_r2: true, r2: false}))
     assert Doctor.healthy?(Map.merge(report, %{managed_r2: true, r2: true}))
@@ -358,6 +518,8 @@ defmodule TamayotchiStackTest do
   end
 
   defp content(igniter, path) do
+    igniter = Igniter.include_existing_file(igniter, path, required?: true)
+
     igniter.rewrite
     |> Rewrite.source!(path)
     |> Rewrite.Source.get(:content)

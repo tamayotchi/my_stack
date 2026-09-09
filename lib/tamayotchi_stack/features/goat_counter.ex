@@ -19,51 +19,21 @@ defmodule TamayotchiStack.Features.GoatCounter do
     "https://#{code}.goatcounter.com/count"
   end
 
-  @spec validate_endpoint(String.t()) :: :ok | {:error, String.t()}
-  def validate_endpoint(endpoint) when is_binary(endpoint) do
-    uri = URI.parse(endpoint)
+  @spec configure(Igniter.t(), atom() | String.t()) :: Igniter.t()
+  def configure(igniter, app_name) do
+    if Project.phoenix?(igniter) do
+      endpoint = endpoint_for_app(app_name)
 
-    cond do
-      uri.scheme != "https" ->
-        {:error, "GoatCounter endpoint must use https"}
-
-      not is_binary(uri.host) or uri.host == "" ->
-        {:error, "GoatCounter endpoint must include a host"}
-
-      not Regex.match?(~r/^[A-Za-z0-9.-]+$/, uri.host) ->
-        {:error, "GoatCounter endpoint host is invalid"}
-
-      not String.ends_with?(uri.path || "", "/count") ->
-        {:error, "GoatCounter endpoint path must end in /count"}
-
-      uri.query || uri.fragment || uri.userinfo ->
-        {:error, "GoatCounter endpoint cannot include credentials, a query, or a fragment"}
-
-      true ->
-        :ok
-    end
-  end
-
-  def validate_endpoint(_endpoint), do: {:error, "GoatCounter endpoint must be a URL"}
-
-  @spec configure(Igniter.t(), String.t()) :: Igniter.t()
-  def configure(igniter, endpoint) do
-    with :ok <- validate_endpoint(endpoint),
-         true <- Project.phoenix?(igniter) do
       igniter
       |> put_managed_file(@wrapper_path, wrapper(endpoint))
       |> put_managed_file(@vendor_path, vendor_script())
       |> import_from_app_js()
       |> Igniter.add_notice("GoatCounter will send pageviews to #{endpoint}.")
     else
-      false ->
-        Igniter.add_issue(
-          igniter,
-          "GoatCounter requires a Phoenix project with assets/js/app.js"
-        )
-
-      {:error, reason} ->
-        Igniter.add_issue(igniter, reason)
+      Igniter.add_issue(
+        igniter,
+        "GoatCounter requires a Phoenix project with assets/js/app.js"
+      )
     end
   end
 

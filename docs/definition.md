@@ -12,8 +12,8 @@ Implemented in the first vertical slice:
 - app-owned Kamal deployment with optional `kamal-proxy`
 
 R2 is also implemented as optional app-owned storage, following Prezio's
-put/delete behaviour and adapter pattern. Optional SQLite backups based on
-Robert's Litestream/Supercronic setup are also implemented. Oban remains planned work.
+put/delete behaviour and adapter pattern. SQLite always includes backup scripts
+based on Robert's Litestream/Supercronic setup; Kamal adds the daily schedule. Oban remains planned work.
 
 This document defines a reusable Phoenix application starter built with
 [Igniter](https://hexdocs.pm/igniter). It is intended to preserve the decisions
@@ -24,8 +24,8 @@ from the initial design conversation so implementation can continue later.
 Create a reusable tool that can:
 
 1. Generate a new Phoenix application from an application name.
-2. Interactively enable optional infrastructure such as Oban, Cloudflare R2,
-   and Kamal.
+2. Include GoatCounter and Kamal automatically with Phoenix, and offer optional
+   infrastructure such as Oban and Cloudflare R2.
 3. Apply the same infrastructure safely to an existing Phoenix repository.
 4. Support noninteractive flags for scripts and CI.
 5. Produce idempotent, reviewable changes rather than copying one static
@@ -98,9 +98,12 @@ Include SQLite database? [Y/n]
 
 Include Oban? [Y/n]
 Include Cloudflare R2? [y/N]
-Include Kamal deployment? [Y/n]
 Use kamal-proxy? [Y/n]
 ```
+
+Kamal is an invariant of managed Phoenix, not an independent opt-in. Plain Mix
+applications (`--no-phoenix`) get no Kamal and no proxy question. The obsolete
+`--kamal` and `--no-kamal` flags are rejected.
 
 The target directory and base module are derived from the application name, and
 Git is always initialized. They are not wizard questions or public options.
@@ -129,7 +132,7 @@ Existing Phoenix application detected: MyApp
 
 Oban is not installed. Install it? [Y/n]
 R2 is not configured. Configure it? [y/N]
-Kamal is partially configured. Complete it? [Y/n]
+Use kamal-proxy? [Y/n]
 ```
 
 The tool should detect:
@@ -153,6 +156,7 @@ mix tamayotchi.new my_app  # create and configure a new Phoenix application
 mix tamayotchi.setup       # adopt/configure a repository for the first time
 mix tamayotchi.sync        # update enabled features to current conventions
 mix tamayotchi.doctor      # inspect and report without changing files
+mix tamayotchi.secrets     # explicitly generate/import missing credentials into 1Password
 ```
 
 Feature-specific logic remains internal. Users should not have to install,
@@ -164,9 +168,9 @@ Interactive prompts are a convenience. Flags must be the source of truth so
 that the workflow is reproducible:
 
 ```sh
-mix tamayotchi.new my_app --oban --r2 --kamal
-mix tamayotchi.setup --oban --r2 --kamal --yes
-mix tamayotchi.setup --no-oban --r2 --kamal
+mix tamayotchi.new my_app --oban --r2
+mix tamayotchi.setup --oban --r2 --yes
+mix tamayotchi.setup --no-oban --r2
 mix tamayotchi.sync --yes
 mix tamayotchi.doctor --format json
 ```
@@ -323,8 +327,9 @@ to yes. Choosing no runs `phx.new` with `--no-ecto`. Database support is not yet
 a managed feature in the first vertical slice; when implemented, SQLite remains
 the default.
 
-The GoatCounter endpoint is derived from the Mix application name, replacing
-underscores with hyphens:
+The GoatCounter feature accepts the Mix application name, not a user-supplied
+endpoint. It constructs the HTTPS URL internally, replacing underscores with
+hyphens; there is no separate URL-validation step for this derived value:
 
 ```text
 my_app -> https://my-app.goatcounter.com/count
@@ -468,16 +473,12 @@ Recommended behavior:
 
 ### External provisioning boundary
 
-The starter can generate application configuration but should not claim to
-provision these without a dedicated Cloudflare API integration:
-
-- R2 bucket
-- R2 API token and credentials
-- public bucket access
-- custom public domain
-- Cloudflare DNS records
-
-After installation, print an explicit provisioning checklist.
+The dedicated development-time credential task now creates missing R2 buckets
+and bucket-scoped account-owned API tokens, using one-time bootstrap authorization
+from 1Password. It runs after accepted setup changes, not inside patchers or sync.
+Public bucket access, custom public domains, DNS records, and deployment remain
+manual. Installation notices distinguish automatic credentials from these remaining
+operational steps.
 
 ## Feature: Kamal
 
@@ -495,23 +496,38 @@ lib/my_app/release.ex
 
 ### Wizard inputs
 
-The installer asks only:
+Phoenix always includes Kamal. The only deployment question is:
 
 ```text
-Include Kamal deployment? [Y/n]
 Use kamal-proxy? [Y/n]
 ```
 
-The second question is only asked when Kamal is enabled. Other values follow
-the accepted Tamagym convention:
+It is omitted when Phoenix is not managed. There is no Kamal opt-in/opt-out flag.
+Other values follow the accepted deployment conventions:
 
-- server: `192.168.1.39`
+- server: `home-server`, using the SSH destination convention from `../tamayotchi/`
 - SSH user/key: `root` with `~/.ssh/id_home_server`
-- Docker Hub owner: `tamayotchi`
+- container registry: `ghcr.io`, username/namespace `tamayotchi`
+- local Kamal builds/deploys; no generated GitHub Actions workflow
 - deployment architecture: `amd64`
 - host: `<app-name>.tamayotchi.com`
 - 1Password account/vault: `instaleap-llc.1password.com` / `SERVER`
 - 1Password item: the uppercase application name
+
+Configure `home-server` in the operator's SSH config or DNS before deploying.
+Web and backup roles use the same destination. Setup/sync preserve existing IPs
+and custom hosts; moving a deployment requires an explicit application edit.
+For older Phoenix manifests, sync restores derived Kamal state and installs
+missing files without provider calls. Existing proxy choices are retained even
+when the old manifest omitted Kamal. Run the credential task separately after
+reviewing a migration if needed. Doctor requires Kamal whenever Phoenix is managed.
+Turning off Phoenix management preserves existing deployment files, services,
+schedules, and credentials for manual review rather than uninstalling them.
+
+The public `PHX_HOST` remains `<app-slug>.tamayotchi.com` with or without proxy;
+an SSH alias need not resolve in browsers. The alias is address indirection,
+not a security boundary: this does not install the reference app's Cloudflare
+Tunnel, loopback-only proxy binding, or a firewall policy.
 
 ### Generated behavior
 
@@ -536,11 +552,86 @@ The generated `.kamal/secrets` fetches `KAMAL_REGISTRY_PASSWORD` and
 is safe to commit, and must never contain raw secret values. Additional feature
 modules can append their own secret names later.
 
+## Feature: 1Password credential setup
+
+Credential setup is automatic by default in `tamayotchi.new`, `tamayotchi.setup`,
+and the Igniter installer. They enqueue `mix tamayotchi.secrets --yes` only after
+accepted file changes; `--no-secrets` supports offline/file-only runs. Pure patchers,
+compilation, previews, declined changes, conflicts, and sync never contact providers.
+The default does not add another wizard question or a persisted feature flag.
+
+The task reads enabled features from the literal `.tamayotchi.exs`, verifies the
+application identity, and obtains the destination from conventional literal
+`.kamal/secrets` references (without executing shell). Defaults remain the stack's
+1Password account, vault `SERVER`, and uppercase app item. Explicit account/vault/item
+overrides do not modify deployment references. Ambiguous names require an item ID.
+
+GitHub is used only as a container registry. A package-scoped classic PAT is
+configured once as `KAMAL_REGISTRY_PASSWORD` in the shared bootstrap item and reused
+for new app items. The user's existing `gh` OAuth login is not exported or widened.
+Automatic bootstrap reuse checks classic PAT format and a conventional GHCR target;
+it does not validate live package access. Existing registries/credentials are preserved,
+so migration requires explicitly changing `registry.server` and reviewing credentials.
+
+A missing `SECRET_KEY_BASE` is imported from the environment or generated from 48
+cryptographically random bytes, Base64-encoded to 64 characters. Registry, R2, and
+Litestream credentials/configuration can still be imported from matching environment
+variables. By default, a separate `TAMAYOTCHI_BOOTSTRAP` item supplies a shared registry
+token and Cloudflare account/provisioning token, configured once. Missing storage and
+backup buckets are created and separate bucket-scoped account-owned tokens issued;
+their IDs and SHA-256-derived S3 secrets are saved directly in the app item. Runtime
+credentials never receive the bootstrap token or administrative token permissions.
+All managed fields use Password/concealed types, including identifiers, endpoints,
+and provisioning markers. Accepted secrets runs conceal legacy managed text fields
+without changing their values or IDs; unrelated fields and metadata are preserved.
+Existing non-empty values and unrelated fields are preserved. All selected inputs
+and provider checks must pass before writes; `--only` permits deliberate partial setup.
+Access-key pairs are selected together and cannot silently combine unmatched halves.
+
+`--dry-run` reads and displays only names/actions, without generation or writes.
+`--yes` explicitly authorizes noninteractive writes. Interactive confirmation defaults
+to no. Authorization uses an existing op session or a separately supplied, vault-scoped
+`OP_SERVICE_ACCOUNT_TOKEN`; the authenticated account hostname is always verified.
+For desktop integration, sign-in and all vault reads/writes share one persistent
+launcher parent for the entire command. Separate Erlang ports do not reliably share
+terminal authentication. Session output is discarded, never saved or displayed;
+service accounts never invoke desktop sign-in. Framed stdin carries arguments and
+JSON without eval, secret shell variables, or credential files. Requests are bounded,
+failed sessions never retry, and the parent is cleaned up even on exceptions.
+No token-creation permissions are passed into generated applications.
+
+Secret JSON stays in memory and is piped to op's stdin using a bounded Bash/coreutils
+subprocess transport. No credential values become process arguments, temporary files,
+source files, or logs. op caching and debug output are disabled, and provider errors
+are redacted. Existing item IDs are used for edits; re-reads detect changes since the
+preview, and read-back verification checks saved/preserved fields. JSON-template edits
+of unsupported categories, attachments, and passkeys are refused. The CLI cannot
+provide atomic compare-and-swap: concurrent writers must be avoided, and ambiguous
+write failures require inspecting the vault before retrying. No automatic retries,
+rotation, deletion, or revocation are performed.
+
+Cloudflare provisioning supports default-jurisdiction R2 and literal conventional
+deployment settings. Existing bucket configuration is not changed; backups require
+a separate private bucket. Public domains/DNS and production deployment are not
+provisioned. Other S3 endpoints and custom/dynamic layouts use `--no-provision` and
+manual imports. Imported or preserved credentials are not externally validated.
+
+Before each provider write, a non-secret per-feature provisioning marker is saved
+and verified in 1Password. Each newly issued pair is saved immediately. A marker
+with missing keys, or an existing deterministic Cloudflare token name, blocks
+reissuance after interruption. Pagination is checked. There is no cross-provider
+transaction, rollback, automatic retry, rotation, or revocation. Detailed bootstrap,
+permissions, recovery, and security boundaries are in [`secrets.md`](secrets.md).
+Tests use fake clients and a synthetic CLI/vault, never live accounts.
+
 ## Feature: SQLite backups
 
-Implemented as an opt-in `--backups` / `--no-backups` choice, offered only for
-SQLite + Kamal. It defaults to off, including with `--yes`. Backups are independent
-of the application's optional R2 object-storage adapter.
+Backups are an invariant of SQLite, not an independent choice. There is no backup
+prompt or flag: setup and sync detect SQLite and always generate backup files.
+Phoenix automatically includes Kamal, which adds the daily role, binary installation,
+aliases, and deployment environment. Existing SQLite repositories configured without
+managed Phoenix still get backup scripts and a manual scheduling/tool-installation
+guide, not Kamal. Backups are independent of the optional R2 object-storage adapter.
 
 Robert (`../../Nativo/Robert`) is the reference: a separate Kamal backup application
 role using the release image and shared SQLite volume, daily at 15:00 UTC, with
@@ -560,11 +651,15 @@ docs/sqlite-backups.md
 ```
 
 Deployment adds a non-proxied `backup` role on the same host and named volume,
-backup aliases, and separate `LITESTREAM_*` environment references. The default
+backup aliases, and separate `LITESTREAM_*` environment references. Backup credentials
+are scoped to `servers.backup.env.secret`, never the global/web environment. Exact
+legacy generated global credential blocks are migrated; customized blocks yield
+an actionable conflict rather than dropping user changes. The default
 bucket is `<app-slug>-db-backups`, prefix `<app-slug>-production-v0.5`, and region
 `auto`. Endpoint and access keys are supplied through the existing 1Password
-location, never captured from the installer environment. Private bucket and
-bucket-scoped read/write/list/delete credentials must be provisioned externally.
+location, never inserted into generated files. Default credential setup provisions
+the private R2 bucket and bucket-scoped read/write/list/delete credentials. Other
+S3-compatible providers use manual provisioning and explicit imports.
 
 Pinned, checksum-verified Litestream 0.5.17 and Supercronic 0.2.49 binaries are
 installed in the final Docker stage. Unlike Robert's v0.3 timed `sleep 10` job,
@@ -585,10 +680,14 @@ Initial support is one amd64 web host and one SQLite DB in a named shared
 `/app/storage` volume. Multi-host/custom layouts, unmarked existing integrations,
 and ambiguous deployment structures yield actionable conflicts. Owned files and
 marked deployment sections preserve user changes; incomplete markers are refused.
-`.tamayotchi.exs` records `backups: []` only. Sync inspects and repairs missing
-files; doctor checks installation, not remote backup freshness or recoverability.
-`--no-backups` removes desired-state management but does not uninstall a deployed
-scheduler or delete files, secrets, or remote replicas.
+`.tamayotchi.exs` records `backups: []` as derived SQLite state, not an independent
+opt-in. Removing this entry cannot disable backups: setup/sync reinstate it when
+SQLite is present. Doctor requires backup files whenever SQLite is detected and
+also checks the deployment integration when Kamal is managed. It does not verify
+manual scheduling, remote freshness, or recoverability. If SQLite is removed,
+existing backup artifacts, jobs, credentials, and remote data are retained for
+manual review, not deleted. The secrets command includes Litestream credentials
+whenever SQLite is detected, including for older manifests without a backup entry.
 
 The generated-project smoke test exercises a real WAL-mode SQLite database,
 multiple one-shot backups, restore, and integrity checks using the pinned binaries

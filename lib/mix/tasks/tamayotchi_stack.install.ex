@@ -15,6 +15,9 @@ defmodule Mix.Tasks.TamayotchiStack.Install do
   @impl Igniter.Mix.Task
   def igniter(igniter) do
     options = TamayotchiStack.SetupOptions.resolve(igniter, igniter.args.options)
-    TamayotchiStack.Setup.configure(igniter, options)
+
+    igniter
+    |> TamayotchiStack.Setup.configure(options)
+    |> TamayotchiStack.Secrets.queue_setup(igniter.args.options)
   end
 end

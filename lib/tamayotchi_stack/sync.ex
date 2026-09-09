@@ -14,23 +14,21 @@ defmodule TamayotchiStack.Sync do
 
   defp sync_manifest(igniter, manifest) do
     features = Keyword.fetch!(manifest, :features)
-    kamal_config = Keyword.get(features, :kamal)
-    kamal? = is_list(kamal_config)
+    phoenix? = Keyword.has_key?(features, :phoenix)
+    kamal_config = Keyword.get(features, :kamal, [])
 
     options =
-      [
-        phoenix: Keyword.has_key?(features, :phoenix),
-        r2: Keyword.has_key?(features, :r2),
-        backups: Keyword.has_key?(features, :backups),
-        kamal: kamal?
-      ]
-      |> maybe_put_kamal_proxy(kamal_config, kamal?)
+      [phoenix: phoenix?, r2: Keyword.has_key?(features, :r2)]
+      |> maybe_put_kamal_proxy(kamal_config, phoenix?)
 
     Setup.configure(igniter, options)
   end
 
   defp maybe_put_kamal_proxy(options, kamal_config, true) do
-    Keyword.put(options, :kamal_proxy, Keyword.get(kamal_config, :proxy, true))
+    case Keyword.fetch(kamal_config, :proxy) do
+      {:ok, proxy?} -> Keyword.put(options, :kamal_proxy, proxy?)
+      :error -> options
+    end
   end
 
   defp maybe_put_kamal_proxy(options, _kamal_config, false), do: options

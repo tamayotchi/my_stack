@@ -12,6 +12,11 @@ defmodule TamayotchiStack.Features.R2 do
     sweet_xml: "~> 0.7"
   ]
 
+  def bucket_for_app(app) do
+    slug = app |> to_string() |> String.replace("_", "-")
+    if byte_size(slug) < 3, do: slug <> "-storage", else: slug
+  end
+
   def configure(igniter, app, false), do: Manifest.set_feature(igniter, app, :r2, false)
 
   def configure(igniter, app, true) do
@@ -39,12 +44,14 @@ defmodule TamayotchiStack.Features.R2 do
     |> Igniter.add_notice("""
     R2 storage is app-owned. Run mix deps.get after accepting these changes.
     Before production deployment:
-    - Create an R2 bucket and a bucket-scoped object read/write API token in Cloudflare.
-    - Set R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, and R2_ACCOUNT_ID
-      (or an explicit HTTPS R2_ENDPOINT). Never commit credentials.
+    - Setup/install automatically create the bucket and bucket-scoped credentials
+      using your one-time 1Password bootstrap item, unless --no-secrets was chosen.
+    - For file-only setup or custom providers, run mix tamayotchi.secrets afterward
+      or import matching credentials with --no-provision. Never commit credentials.
+    - Supply R2_BUCKET and the saved R2_* credentials to your production environment.
     - R2_REGION defaults to auto. R2_PUBLIC_BASE_URL is optional; configure public
       access/custom domain and DNS yourself if you need public URLs.
-    - With Kamal, add the R2 fields referenced in .kamal/secrets to your 1Password item.
+    - Kamal fetches the R2 fields from the application's 1Password item.
     Tests and development without credentials use Storage.Fake (no persistent uploads).
     Replace the :storage adapter to use another backend; sync preserves app-owned edits.
     --no-r2 stops managing the feature; it does not delete storage code or configuration.

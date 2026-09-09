@@ -31,7 +31,7 @@ defmodule TamayotchiStack.New.MixProject do
 
   defp aliases do
     [
-      precommit: ["compile --warning-as-errors", "format --check-formatted", "test"]
+      precommit: ["compile --warnings-as-errors", "format --check-formatted", "test"]
     ]
   end
 end

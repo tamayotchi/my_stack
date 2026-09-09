@@ -11,9 +11,8 @@ defmodule TamayotchiStack.TaskInfo do
           schema: [
             phoenix: :boolean,
             r2: :boolean,
-            backups: :boolean,
-            kamal: :boolean,
-            proxy: :boolean
+            proxy: :boolean,
+            secrets: :boolean
           ],
           defaults: [],
           aliases: [],

@@ -7,14 +7,18 @@ defmodule Mix.Tasks.Tamayotchi.Setup do
       mix tamayotchi.setup
       mix tamayotchi.setup --phoenix
 
+  Phoenix always includes Kamal deployment; --no-phoenix does not add Kamal.
+  SQLite always includes backup scripts. With Phoenix, the daily Kamal backup
+  role and deployment credentials are configured automatically.
+
   ## Options
 
-    * `--phoenix` / `--no-phoenix` - choose Phoenix; GoatCounter is automatic
+    * `--phoenix` / `--no-phoenix` - choose Phoenix; GoatCounter and Kamal are automatic
     * `--r2` / `--no-r2` - choose Cloudflare R2 storage (default: no on first setup)
-    * `--kamal` / `--no-kamal` - choose Kamal deployment
-    * `--proxy` / `--no-proxy` - choose kamal-proxy when using Kamal
-    * `--backups` / `--no-backups` - daily SQLite backups (default: no; requires SQLite and Kamal)
-    * `--yes` - accept defaults and the resulting Igniter changes
+    * `--proxy` / `--no-proxy` - choose kamal-proxy when using Phoenix
+    * `--secrets` / `--no-secrets` - set up missing credentials in 1Password after
+      accepted file changes (default: yes); requires one-time bootstrap credentials
+    * `--yes` - accept defaults, file changes, and automatic credential setup
   """
 
   use Igniter.Mix.Task
@@ -25,6 +29,9 @@ defmodule Mix.Tasks.Tamayotchi.Setup do
   @impl Igniter.Mix.Task
   def igniter(igniter) do
     options = TamayotchiStack.SetupOptions.resolve(igniter, igniter.args.options)
-    TamayotchiStack.Setup.configure(igniter, options)
+
+    igniter
+    |> TamayotchiStack.Setup.configure(options)
+    |> TamayotchiStack.Secrets.queue_setup(igniter.args.options)
   end
 end

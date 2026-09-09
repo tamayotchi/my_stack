@@ -55,18 +55,17 @@ defmodule TamayotchiStack.New do
     end
   end
 
-  @spec setup_arguments(boolean(), boolean(), boolean(), boolean(), boolean()) :: [String.t()]
-  def setup_arguments(phoenix?, r2?, kamal?, proxy?, backups? \\ false) do
+  @spec setup_arguments(boolean(), boolean(), boolean(), boolean()) :: [String.t()]
+  def setup_arguments(phoenix?, r2?, proxy?, secrets? \\ true) do
     arguments = [
       "tamayotchi_stack.install",
       "--yes",
       if(phoenix?, do: "--phoenix", else: "--no-phoenix"),
-      if(r2?, do: "--r2", else: "--no-r2"),
-      if(backups?, do: "--backups", else: "--no-backups"),
-      if(kamal?, do: "--kamal", else: "--no-kamal")
+      if(r2?, do: "--r2", else: "--no-r2")
     ]
 
-    if kamal?, do: arguments ++ [if(proxy?, do: "--proxy", else: "--no-proxy")], else: arguments
+    arguments = if secrets?, do: arguments, else: arguments ++ ["--no-secrets"]
+    if phoenix?, do: arguments ++ [if(proxy?, do: "--proxy", else: "--no-proxy")], else: arguments
   end
 
   @spec run_command!(String.t(), [String.t()], keyword()) :: :ok

@@ -16,18 +16,21 @@ defmodule TamayotchiStack.Setup do
 
     igniter =
       if phoenix? do
-        GoatCounter.configure(igniter, GoatCounter.endpoint_for_app(app_name))
+        GoatCounter.configure(igniter, app_name)
       else
         igniter
       end
 
     igniter = R2.configure(igniter, app_name, Keyword.get(options, :r2, false))
 
-    kamal? = Keyword.get(options, :kamal, false)
-    kamal_options = if kamal?, do: [proxy: Keyword.fetch!(options, :kamal_proxy)], else: []
+    # Kamal follows Phoenix; only its proxy is a separate choice.
+    kamal_options =
+      if phoenix?,
+        do: [proxy: Keyword.get(options, :kamal_proxy, Project.kamal_proxy?(igniter, true))],
+        else: []
 
     igniter
-    |> Kamal.configure(app_name, kamal?, kamal_options)
-    |> Backups.configure(app_name, Keyword.get(options, :backups, false), kamal?)
+    |> Kamal.configure(app_name, phoenix?, kamal_options)
+    |> Backups.configure(app_name, phoenix?)
   end
 end

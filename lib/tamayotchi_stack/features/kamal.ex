@@ -5,7 +5,7 @@ defmodule TamayotchiStack.Features.Kamal do
   alias TamayotchiStack.Project
 
   @managed_marker "Managed by tamayotchi_stack."
-  @server "192.168.1.39"
+  @server "home-server"
   @registry_owner "tamayotchi"
   @one_password_account "instaleap-llc.1password.com"
   @one_password_vault "SERVER"
@@ -15,8 +15,26 @@ defmodule TamayotchiStack.Features.Kamal do
     if enabled? do
       configure_enabled(igniter, app_name, options)
     else
-      Manifest.set_feature(igniter, app_name, :kamal, false)
+      igniter = Manifest.set_feature(igniter, app_name, :kamal, false)
+
+      if Igniter.exists?(igniter, "config/deploy.yml") do
+        Igniter.add_notice(
+          igniter,
+          "Phoenix is not managed. Existing Kamal files were preserved for manual review; no deployed services, schedules, or credentials were removed."
+        )
+      else
+        igniter
+      end
     end
+  end
+
+  @doc false
+  def secret_location_for_app(app_name) do
+    %{
+      account: @one_password_account,
+      vault: @one_password_vault,
+      item: app_name |> to_string() |> String.upcase()
+    }
   end
 
   @spec hostname_for_app(atom() | String.t()) :: String.t()
@@ -77,7 +95,7 @@ defmodule TamayotchiStack.Features.Kamal do
     igniter
     |> put_managed_file("rel/overlays/bin/migrate", migrate_script(app_name, base_module))
     |> put_managed_file("rel/overlays/bin/docker-entrypoint", docker_entrypoint())
-    |> put_managed_file(release_path(app_name), release_module(app_name, base_module))
+    |> put_managed_file(Project.release_path(base_module), release_module(app_name, base_module))
   end
 
   defp maybe_put_database_files(igniter, _app_name, _base_module, false), do: igniter
@@ -127,7 +145,10 @@ defmodule TamayotchiStack.Features.Kamal do
       [block, start, clear, secret_start, secret] ->
         if Regex.match?(~r/^proxy:\s*$/m, current) == proxy? and
              simple_environment_block?(clear, secret) do
-          defaults = [{"R2_REGION", "auto"}, {"R2_BUCKET", to_string(app)}]
+          defaults = [
+            {"R2_REGION", "auto"},
+            {"R2_BUCKET", TamayotchiStack.Features.R2.bucket_for_app(app)}
+          ]
 
           clear =
             Enum.reduce(defaults, clear, fn {key, value}, text ->
@@ -211,7 +232,9 @@ defmodule TamayotchiStack.Features.Kamal do
   defp deploy_config(app_name, proxy?, sqlite?, r2?) do
     app = to_string(app_name)
     service = slug(app_name)
-    hostname = if proxy?, do: hostname_for_app(app_name), else: @server
+    # An SSH alias is not necessarily resolvable by browsers. Keep the public
+    # application hostname independent of the SSH destination, with or without proxy.
+    hostname = hostname_for_app(app_name)
 
     """
     # #{@managed_marker}
@@ -224,6 +247,7 @@ defmodule TamayotchiStack.Features.Kamal do
         - ~/.ssh/id_home_server
 
     registry:
+      server: ghcr.io
       username: #{@registry_owner}
       password:
         - KAMAL_REGISTRY_PASSWORD
@@ -301,7 +325,7 @@ defmodule TamayotchiStack.Features.Kamal do
   defp migration_alias(false), do: ""
 
   defp r2_environment(app, true) do
-    "    R2_REGION: auto\n    R2_BUCKET: #{app}\n"
+    "    R2_REGION: auto\n    R2_BUCKET: #{TamayotchiStack.Features.R2.bucket_for_app(app)}\n"
   end
 
   defp r2_environment(_app, false), do: ""
@@ -503,13 +527,14 @@ defmodule TamayotchiStack.Features.Kamal do
     """
   end
 
-  defp release_path(app_name), do: "lib/#{app_name}/release.ex"
-
   defp secret_notice(app_name) do
     item = app_name |> to_string() |> String.upcase()
 
-    "Store KAMAL_REGISTRY_PASSWORD and SECRET_KEY_BASE (generate with mix phx.gen.secret) " <>
-      "in 1Password item #{@one_password_vault}/#{item} before deploying."
+    "New deployments use ghcr.io/#{@registry_owner}/#{slug(app_name)} with local Kamal (no GitHub Actions). " <>
+      "Configure a package-scoped GitHub classic PAT once as KAMAL_REGISTRY_PASSWORD in SERVER/TAMAYOTCHI_BOOTSTRAP; " <>
+      "setup generates SECRET_KEY_BASE and saves application credentials automatically. " <>
+      "Existing registry settings and credentials are preserved; migrate old registries explicitly. Secrets are referenced from " <>
+      "1Password item #{@one_password_vault}/#{item}."
   end
 
   defp slug(app_name) do

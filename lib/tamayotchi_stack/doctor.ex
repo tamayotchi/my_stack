@@ -17,8 +17,8 @@ defmodule TamayotchiStack.Doctor do
       manifest: manifest_status(manifest),
       managed_phoenix: managed_phoenix?,
       managed_kamal: managed_kamal?,
-      managed_backups: backups_enabled?(manifest),
-      backups: Project.backups_on_disk?(),
+      managed_backups: Project.sqlite_on_disk?(),
+      backups: Project.backups_on_disk?(managed_kamal?),
       managed_r2: r2_enabled?(manifest),
       r2: Project.r2_on_disk?(),
       phoenix: Project.phoenix_on_disk?(),
@@ -40,7 +40,7 @@ defmodule TamayotchiStack.Doctor do
       (not report.managed_phoenix or
          (report.phoenix and report.goatcounter and
             report.goatcounter_endpoint == report.expected_goatcounter_endpoint)) and
-      (not Map.get(report, :managed_kamal, false) or
+      (not (report.managed_phoenix or Map.get(report, :managed_kamal, false)) or
          (report.phoenix and report.kamal and
             report.kamal_proxy == report.expected_kamal_proxy))
   end
@@ -57,7 +57,7 @@ defmodule TamayotchiStack.Doctor do
       Endpoint:     #{report.goatcounter_endpoint || "not configured"}
       Expected:     #{report.expected_goatcounter_endpoint || "not applicable"}
       R2 storage:   #{feature_status(report.r2, report.managed_r2)}
-      SQLite backups: #{feature_status(report.backups, report.managed_backups)} (installation only; verify backup freshness separately)
+      SQLite backups: #{feature_status(report.backups, report.managed_backups)} (required by SQLite; verify scheduling and backup freshness separately)
       Kamal:        #{feature_status(report.kamal, report.managed_kamal)}
       Kamal proxy:  #{proxy_status(report)}
     """
@@ -74,16 +74,15 @@ defmodule TamayotchiStack.Doctor do
 
   defp phoenix_enabled?({:error, _reason}), do: false
 
-  defp backups_enabled?({:ok, manifest}), do: Keyword.has_key?(manifest[:features], :backups)
-  defp backups_enabled?({:error, _}), do: false
-
   defp r2_enabled?({:ok, manifest}), do: Keyword.has_key?(manifest[:features], :r2)
   defp r2_enabled?({:error, _}), do: false
 
   defp kamal_configuration({:ok, manifest}) do
-    case Keyword.get(Keyword.get(manifest, :features, []), :kamal) do
-      config when is_list(config) -> {true, Keyword.get(config, :proxy, true)}
-      _other -> {false, nil}
+    if phoenix_enabled?({:ok, manifest}) do
+      config = Keyword.get(manifest[:features], :kamal, [])
+      {true, Keyword.get(config, :proxy, Project.kamal_proxy_on_disk?(true))}
+    else
+      {false, nil}
     end
   end
 

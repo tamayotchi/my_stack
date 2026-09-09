@@ -44,29 +44,36 @@ defmodule TamayotchiStack.Project do
     Enum.all?(@kamal_files, &File.exists?/1) and sqlite_kamal_files_on_disk?()
   end
 
-  @spec kamal_proxy?(Igniter.t()) :: boolean()
-  def kamal_proxy?(igniter) do
+  @spec kamal_proxy?(Igniter.t(), boolean()) :: boolean()
+  def kamal_proxy?(igniter, default \\ false) do
     if Igniter.exists?(igniter, "config/deploy.yml") do
       igniter
       |> source_content("config/deploy.yml")
       |> root_proxy?()
     else
-      false
+      default
     end
   end
 
-  @spec kamal_proxy_on_disk?() :: boolean()
-  def kamal_proxy_on_disk? do
+  @spec kamal_proxy_on_disk?(boolean()) :: boolean()
+  def kamal_proxy_on_disk?(default \\ false) do
     case File.read("config/deploy.yml") do
       {:ok, contents} -> root_proxy?(contents)
-      {:error, _reason} -> false
+      {:error, _reason} -> default
     end
   end
 
-  @spec backups_on_disk?() :: boolean()
-  def backups_on_disk? do
-    sqlite_on_disk?() and kamal_on_disk?() and
+  @spec backups_on_disk?(boolean()) :: boolean()
+  def backups_on_disk?(kamal? \\ false) do
+    sqlite_on_disk?() and
       Enum.all?(TamayotchiStack.Features.Backups.paths(), &File.exists?/1) and
+      file_contains?("rel/overlays/etc/backup.cron", ["/app/bin/litestream-backup"]) and
+      file_contains?("rel/overlays/bin/litestream-backup", ["litestream replicate", "-once"]) and
+      (not kamal? or backup_deployment_on_disk?())
+  end
+
+  defp backup_deployment_on_disk? do
+    kamal_on_disk?() and backup_credentials_scoped_on_disk?() and
       file_contains?("config/deploy.yml", [
         "  backup:",
         "/app/etc/backup.cron",
@@ -78,9 +85,14 @@ defmodule TamayotchiStack.Project do
         "LITESTREAM_ACCESS_KEY_ID",
         "LITESTREAM_SECRET_ACCESS_KEY"
       ]) and
-      file_contains?("Dockerfile", ["/usr/local/bin/litestream", "/usr/local/bin/supercronic"]) and
-      file_contains?("rel/overlays/etc/backup.cron", ["/app/bin/litestream-backup"]) and
-      file_contains?("rel/overlays/bin/litestream-backup", ["litestream replicate", "-once"])
+      file_contains?("Dockerfile", ["/usr/local/bin/litestream", "/usr/local/bin/supercronic"])
+  end
+
+  defp backup_credentials_scoped_on_disk? do
+    case File.read("config/deploy.yml") do
+      {:ok, contents} -> TamayotchiStack.Features.Backups.credentials_scoped?(contents)
+      _ -> false
+    end
   end
 
   defp file_contains?(path, expected) do
@@ -145,11 +157,14 @@ defmodule TamayotchiStack.Project do
     end)
   end
 
+  # Igniter normalizes module files by the Mix project's namespace, which need
+  # not equal the OTP app name (for example, sample_123 becomes Sample123).
+  def release_path(base_module), do: "lib/#{Macro.underscore(base_module)}/release.ex"
+
   defp sqlite_kamal_files_on_disk? do
     if sqlite_on_disk?() do
-      app_name = Mix.Project.config()[:app]
-      release_file = "lib/#{app_name}/release.ex"
-      Enum.all?([release_file | @kamal_sqlite_files], &File.exists?/1)
+      base_module = Mix.Project.get() |> Module.split() |> Enum.drop(-1) |> Module.concat()
+      Enum.all?([release_path(base_module) | @kamal_sqlite_files], &File.exists?/1)
     else
       true
     end

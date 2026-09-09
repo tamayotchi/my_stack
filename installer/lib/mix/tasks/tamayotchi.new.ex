@@ -11,13 +11,15 @@ defmodule Mix.Tasks.Tamayotchi.New do
     * `--phoenix` / `--no-phoenix` - choose Phoenix (default: yes)
     * `--sqlite` / `--no-sqlite` - choose SQLite when using Phoenix (default: yes)
     * `--r2` / `--no-r2` - choose Cloudflare R2 storage (default: no)
-    * `--kamal` / `--no-kamal` - choose Kamal deployment (default: yes with Phoenix)
-    * `--proxy` / `--no-proxy` - choose kamal-proxy (default: yes with Kamal)
-    * `--backups` / `--no-backups` - daily SQLite backups (default: no; requires SQLite and Kamal)
-    * `--yes` - accept defaults without prompting
+    * `--proxy` / `--no-proxy` - choose kamal-proxy (default: yes with Phoenix)
+    * `--secrets` / `--no-secrets` - automatically create/save missing credentials
+      in 1Password after configuration (default: yes)
+    * `--yes` - accept defaults, including automatic credentials, without prompting
 
   The application name determines its directory, root module, and GoatCounter
   endpoint. Every generated project initializes a Git repository.
+  Phoenix always includes Kamal; plain Mix applications do not use Kamal.
+  SQLite always includes backup scripts and a daily Kamal backup role.
   """
 
   use Mix.Task
@@ -28,9 +30,8 @@ defmodule Mix.Tasks.Tamayotchi.New do
     phoenix: :boolean,
     sqlite: :boolean,
     r2: :boolean,
-    backups: :boolean,
-    kamal: :boolean,
     proxy: :boolean,
+    secrets: :boolean,
     yes: :boolean
   ]
 
@@ -45,9 +46,7 @@ defmodule Mix.Tasks.Tamayotchi.New do
     phoenix? = resolve_boolean(options, :phoenix, "Include Phoenix?", true)
     sqlite? = resolve_sqlite(options, phoenix?)
     r2? = resolve_boolean(options, :r2, "Include Cloudflare R2 storage?", false)
-    kamal? = resolve_kamal(options, phoenix?)
-    proxy? = resolve_proxy(options, kamal?)
-    backups? = resolve_backups(options, sqlite?, kamal?)
+    proxy? = resolve_proxy(options, phoenix?)
 
     announce_goatcounter_endpoint(app_name, phoenix?)
     target = Path.expand(app_name)
@@ -58,8 +57,8 @@ defmodule Mix.Tasks.Tamayotchi.New do
 
     generate_project!(target, phoenix?, sqlite?)
     install_stack!(target)
-    configure_stack!(target, phoenix?, r2?, kamal?, proxy?, backups?)
     init_git!(target)
+    configure_stack!(target, phoenix?, r2?, proxy?, Keyword.get(options, :secrets, true))
 
     Mix.shell().info([
       :green,
@@ -134,37 +133,13 @@ defmodule Mix.Tasks.Tamayotchi.New do
     false
   end
 
-  defp resolve_kamal(options, true) do
-    resolve_boolean(options, :kamal, "Include Kamal deployment?", true)
-  end
-
-  defp resolve_kamal(options, false) do
-    if Keyword.get(options, :kamal, false) do
-      Mix.raise("--kamal requires Phoenix; enable --phoenix or remove it")
-    end
-
-    false
-  end
-
   defp resolve_proxy(options, true) do
     resolve_boolean(options, :proxy, "Use kamal-proxy?", true)
   end
 
   defp resolve_proxy(options, false) do
     if Keyword.has_key?(options, :proxy) do
-      Mix.raise("--proxy/--no-proxy requires Kamal")
-    end
-
-    false
-  end
-
-  defp resolve_backups(options, true, true) do
-    resolve_boolean(options, :backups, "Include daily SQLite backups?", false)
-  end
-
-  defp resolve_backups(options, _sqlite?, _kamal?) do
-    if Keyword.get(options, :backups, false) do
-      Mix.raise("--backups requires SQLite and Kamal; enable both or use --no-backups")
+      Mix.raise("--proxy/--no-proxy requires Phoenix; Kamal is only included with Phoenix")
     end
 
     false
@@ -196,8 +171,8 @@ defmodule Mix.Tasks.Tamayotchi.New do
     New.run_command!("mix", ["deps.get"], cd: target)
   end
 
-  defp configure_stack!(target, phoenix?, r2?, kamal?, proxy?, backups?) do
-    arguments = New.setup_arguments(phoenix?, r2?, kamal?, proxy?, backups?)
+  defp configure_stack!(target, phoenix?, r2?, proxy?, secrets?) do
+    arguments = New.setup_arguments(phoenix?, r2?, proxy?, secrets?)
 
     New.run_command!("mix", arguments, cd: target)
     New.run_command!("mix", ["deps.get"], cd: target)

@@ -18,45 +18,75 @@ defmodule TamayotchiStack.Features.Backups do
 
   def paths, do: Enum.map(@files, &elem(&1, 0))
 
-  def configure(igniter, app, false, _kamal?) do
+  @doc false
+  def credentials_scoped?(deployment) do
+    with [_, servers] <- Regex.run(~r/^servers:\n(.*?)(?=^\S|\z)/ms, deployment),
+         [_, role] <- Regex.run(~r/^  backup:\n(.*?)(?=^  \S|\z)/ms, servers),
+         [_, env] <- Regex.run(~r/^env:\n(.*?)(?=^\S|\z)/ms, deployment),
+         {:ok, _} <- ensure_no_global_credentials(env) do
+      scoped_credentials?(role)
+    else
+      _ -> false
+    end
+  end
+
+  def configure(igniter, app, kamal?) do
+    if Project.sqlite?(igniter) do
+      configure_sqlite(igniter, app, kamal?)
+    else
+      without_sqlite(igniter, app)
+    end
+  end
+
+  defp without_sqlite(igniter, app) do
     igniter = Manifest.set_feature(igniter, app, :backups, false)
 
     if Igniter.exists?(igniter, "rel/overlays/etc/backup.cron") do
       Igniter.add_notice(
         igniter,
-        "--no-backups stops management, not an existing backup schedule. Stop the Kamal backup role explicitly to disable scheduled backups; no backups or credentials were deleted."
+        "SQLite is no longer detected. Existing backup files and deployed schedules were preserved; review them manually. No backups or credentials were deleted."
       )
     else
       igniter
     end
   end
 
-  def configure(igniter, app, true, kamal?) do
-    if kamal? and Project.phoenix?(igniter) and Project.sqlite?(igniter) do
-      bindings = [app: to_string(app), slug: app |> to_string() |> String.replace("_", "-")]
+  defp configure_sqlite(igniter, app, kamal?) do
+    bindings = [app: to_string(app), slug: app |> to_string() |> String.replace("_", "-")]
 
-      Enum.reduce(@files, igniter, fn {path, template}, igniter ->
-        put_owned_file(igniter, path, render(template, bindings))
-      end)
-      |> patch("Dockerfile", &dockerfile(&1, bindings))
-      |> patch("config/deploy.yml", &deployment(&1, bindings))
-      |> patch(".kamal/secrets", &secrets/1)
-      |> Manifest.set_feature(app, :backups, true)
-      |> Igniter.add_notice("""
-      SQLite backups: daily at 15:00 UTC in the Kamal backup role, with seven-day retention.
-      Create a PRIVATE #{bindings[:slug]}-db-backups bucket and a bucket-scoped token.
-      Add LITESTREAM_ENDPOINT, LITESTREAM_ACCESS_KEY_ID, and LITESTREAM_SECRET_ACCESS_KEY
-      to your deployment's 1Password item. These are separate from application R2 storage.
-      Deploy, run kamal backup, then kamal backup-restore to verify recovery to a separate file.
-      Read docs/sqlite-backups.md for recovery, monitoring, schedule changes, and S3 settings.
-      Daily backups can lose changes since the last successful run; monitor job completion.
-      """)
-    else
-      Igniter.add_issue(
-        igniter,
-        "--backups requires a Phoenix SQLite project and --kamal; enable those features or use --no-backups"
-      )
-    end
+    Enum.reduce(@files, igniter, fn {path, template}, igniter ->
+      put_owned_file(igniter, path, render(template, bindings))
+    end)
+    |> maybe_configure_kamal(bindings, kamal?)
+    |> Manifest.set_feature(app, :backups, true)
+    |> Igniter.add_notice("""
+    SQLite detected: backup files are always included, with seven-day retention.
+    Setup/install automatically provision the PRIVATE #{bindings[:slug]}-db-backups bucket
+    and separate Litestream credentials using your one-time 1Password bootstrap item.
+    With --no-secrets, run mix tamayotchi.secrets later or provision/import manually.
+    Sync only maintains files; it never creates credentials or cloud resources.
+    With Kamal, deploy and run kamal backup, then kamal backup-restore to verify recovery.
+    Phoenix includes Kamal automatically. Without managed Phoenix, follow the manual tool installation and scheduling instructions.
+    Read docs/sqlite-backups.md for recovery, monitoring, schedule changes, and S3 settings.
+    Daily backups can lose changes since the last successful run; monitor job completion.
+    """)
+  end
+
+  defp maybe_configure_kamal(igniter, bindings, true) do
+    igniter
+    |> patch("Dockerfile", &dockerfile(&1, bindings))
+    |> patch("config/deploy.yml", &deployment(&1, bindings))
+    |> patch(".kamal/secrets", &secrets/1)
+    |> Igniter.add_notice(
+      "Kamal backup role configured for 15:00 UTC daily, with role-scoped credentials. Deploy it and verify a backup/restore before relying on the schedule."
+    )
+  end
+
+  defp maybe_configure_kamal(igniter, _bindings, false) do
+    Igniter.add_notice(
+      igniter,
+      "SQLite backup scripts are included, but no scheduler was installed without managed Phoenix/Kamal. Install the pinned tools and configure a production schedule as described in docs/sqlite-backups.md."
+    )
   end
 
   defp put_owned_file(igniter, path, desired) do
@@ -152,6 +182,10 @@ defmodule TamayotchiStack.Features.Backups do
             env:
               clear:
                 TZ: UTC
+              secret:
+                - LITESTREAM_ENDPOINT
+                - LITESTREAM_ACCESS_KEY_ID
+                - LITESTREAM_SECRET_ACCESS_KEY
         """
 
         {:ok, servers <> block("role", role, "  ")}
@@ -160,15 +194,68 @@ defmodule TamayotchiStack.Features.Backups do
          "backups require one web host sharing the SQLite volume; configure the backup role manually for custom/multi-host deployments"}
       end
     else
-      :present -> {:ok, servers}
+      :present -> ensure_role_secrets(servers)
       error -> error
+    end
+  end
+
+  defp ensure_role_secrets(servers) do
+    pattern =
+      ~r/(  # tamayotchi_stack backups:role begin\n)(.*?)(  # tamayotchi_stack backups:role end\n)/s
+
+    case Regex.run(pattern, servers) do
+      [whole, start, role, finish] ->
+        cond do
+          scoped_credentials?(role) ->
+            {:ok, servers}
+
+          not String.contains?(role, "LITESTREAM_") and
+            length(Regex.scan(~r/^    env:$/m, role)) == 1 and
+            not Regex.match?(~r/^      secret:/m, role) and
+              Regex.match?(
+                ~r/^    env:\n      clear:\n(?:        [A-Za-z_][A-Za-z_0-9]*:[^\n]*\n| *#[^\n]*\n|\n)*\z/m,
+                role
+              ) ->
+            secret = "      secret:\n" <> Enum.map_join(@secret_names, "", &"        - #{&1}\n")
+
+            {:ok,
+             String.replace(servers, whole, start <> role <> secret <> finish, global: false)}
+
+          true ->
+            {:error,
+             "move all three Litestream credentials into backup.env.secret manually; refusing to rewrite a customized backup role"}
+        end
+
+      _ ->
+        {:error, "cannot safely identify the backup role's credential scope"}
+    end
+  end
+
+  defp scoped_credentials?(role) do
+    with [[_, env]] <- Regex.scan(~r/^    env:\n(.*?)(?=^    \S|\z)/ms, role),
+         [[_, secret]] <- Regex.scan(~r/^      secret:\n(.*?)(?=^      \S|\z)/ms, env) do
+      Enum.all?(@secret_names, &Regex.match?(Regex.compile!("^        - #{&1}$", "m"), secret))
+    else
+      _ -> false
     end
   end
 
   defp environment(env, bindings) do
     case {block_status(env, "clear"), block_status(env, "secret")} do
       {:present, :present} ->
-        {:ok, env}
+        # Migrate only the exact old generated credential block. Never remove a
+        # customized block or leave backup credentials available to the web role.
+        legacy = block("secret", Enum.map_join(@secret_names, "", &"    - #{&1}\n"), "    ")
+
+        if String.contains?(env, legacy) do
+          ensure_no_global_credentials(String.replace(env, legacy, "", global: false))
+        else
+          {:error,
+           "move Litestream credentials out of global env.secret into backup.env.secret; the legacy block has custom changes"}
+        end
+
+      {:present, :absent} ->
+        ensure_no_global_credentials(env)
 
       {:absent, :absent} ->
         pattern = ~r/\A(  clear:\n)(.*?)(  secret:\n)(.*)\z/s
@@ -182,13 +269,11 @@ defmodule TamayotchiStack.Features.Backups do
               clear_additions =
                 "    LITESTREAM_BUCKET_NAME: #{bindings[:slug]}-db-backups\n    LITESTREAM_BUCKET_PATH: #{bindings[:slug]}-production-v0.5\n    LITESTREAM_REGION: auto\n"
 
-              secret_additions = Enum.map_join(@secret_names, "", &"    - #{&1}\n")
-
               {:ok,
                clear_start <>
                  clear <>
                  block("clear", clear_additions, "    ") <>
-                 secret_start <> secret <> block("secret", secret_additions, "    ")}
+                 secret_start <> secret}
             end
 
           _ ->
@@ -199,6 +284,14 @@ defmodule TamayotchiStack.Features.Backups do
       _ ->
         {:error, "incomplete backup environment markers; repair both clear and secret sections"}
     end
+  end
+
+  defp ensure_no_global_credentials(env) do
+    if Enum.any?(@secret_names, &String.contains?(env, &1)),
+      do:
+        {:error,
+         "Litestream credentials must be scoped to backup.env.secret, not the web/global environment"},
+      else: {:ok, env}
   end
 
   defp simple_env?(clear, secret) do
