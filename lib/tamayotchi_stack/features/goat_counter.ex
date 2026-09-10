@@ -28,7 +28,9 @@ defmodule TamayotchiStack.Features.GoatCounter do
       |> put_managed_file(@wrapper_path, wrapper(endpoint))
       |> put_managed_file(@vendor_path, vendor_script())
       |> import_from_app_js()
-      |> Igniter.add_notice("GoatCounter will send pageviews to #{endpoint}.")
+      |> Igniter.add_notice(
+        "GoatCounter tracking uses #{endpoint}. Accepted setup provisions the site using the shared bootstrap item; --no-secrets and sync only configure files."
+      )
     else
       Igniter.add_issue(
         igniter,

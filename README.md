@@ -241,6 +241,8 @@ stops management without deleting existing files, deployed jobs, or credentials.
 - `CLOUDFLARE_ACCOUNT_ID`: your account ID (for R2/SQLite)
 - `CLOUDFLARE_API_TOKEN`: provisioning authorization with Account API Tokens Write
   and Workers R2 Storage Write; see the permission details in [`docs/secrets.md`](docs/secrets.md)
+- `GOATCOUNTER_SITE_URL`: your existing main `https://<site>.goatcounter.com` URL
+- `GOATCOUNTER_API_TOKEN`: a token with **Read sites + Create sites** permissions
 
 Cloudflare authorization is needed **once**, not for each application. Only replace
 the shared token if it expires or is revoked. Application R2/backup keys are issued
@@ -261,8 +263,10 @@ avoid repeated desktop approvals; keep 1Password open and unlocked.
 
 **Each project:** normal `tamayotchi.new` / `tamayotchi.setup` automatically generate
 the Phoenix key, copy the shared registry credential, and issue/save bucket-scoped
-R2/backup keys. Existing values are preserved. The powerful bootstrap token is
-never copied to the app item or deployment. No extra per-project command is needed.
+R2/backup keys. Phoenix apps also get their derived GoatCounter site: an existing
+owned site is reused without changing its settings, otherwise a child site is created.
+Existing values are preserved. Neither administrative API token is copied to the
+app item, JavaScript, or deployment. No extra per-project command is needed.
 
 ```sh
 mix tamayotchi.new my_app --yes
@@ -277,9 +281,11 @@ Credentials run only after accepted setup changes. `sync`, declined setup change
 and setup with `--no-secrets` never contact providers. The standalone secrets task
 checks inputs and displays the plan before asking for confirmation. There is no
 `--dry-run` option. No values appear in arguments, logs, temporary files, or
-repository diffs. Durable 1Password markers prevent automatic token reissuance
-after interrupted operations; inspect
-both systems after an ambiguous failure. There is no automatic rotation or rollback.
+repository diffs. Durable 1Password markers prevent automatic token reissuance or
+blind GoatCounter recreation after interrupted operations; inspect the affected
+providers after an ambiguous failure. There is no automatic rotation or rollback.
+Full credential reruns recheck GoatCounter read-only; `--only` limits work to named
+credential fields and skips site provisioning. `--no-provision` skips both providers.
 
 See [`docs/secrets.md`](docs/secrets.md) for bootstrap instructions, manual imports,
 service accounts, custom destinations, supported layouts, and recovery.

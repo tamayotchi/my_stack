@@ -357,6 +357,30 @@ but refuses to overwrite an unmarked, pre-existing integration. The manifest
 records only that Phoenix is managed; the GoatCounter endpoint is always derived
 from the manifest application name.
 
+### Automatic hosted GoatCounter site creation
+
+The post-acceptance credential task also provisions GoatCounter for managed Phoenix.
+The read-only shared bootstrap item supplies `GOATCOUNTER_SITE_URL` (the existing
+main hosted site) and `GOATCOUNTER_API_TOKEN` with Read sites/Create sites permissions.
+Both use Password/concealed fields. The API token never becomes an app credential
+or runtime dependency; normal browser tracking still uses the public count endpoint.
+
+Preflight checks `/api/v0/me` permissions and `/api/v0/sites` ownership. An existing
+active matching site, including the parent itself, is reused without changing any
+settings. Otherwise `PUT /api/v0/sites` creates a child with the derived code and
+an HTTPS linking domain from literal `PHX_HOST` (or the app-host default). Full
+reruns recheck GoatCounter read-only; `--only` excludes site provisioning, while
+`--no-provision` excludes both providers. `--no-secrets` and sync stay file-only.
+
+A concealed `TAMAYOTCHI_GOATCOUNTER_PROVISIONING` checkpoint precedes creation.
+An interrupted operation can be reconciled read-only when the owned site exists;
+a checkpoint without that site, or a different parent target, refuses recreation.
+There is no automatic checkpoint clearing, retry, retargeting, or deletion.
+Req transport is bounded, TLS-verified, paced for the hosted rate limit, and never
+retries or redirects. Only hosted HTTPS main-site origins are accepted. GoatCounter
+codes must be unreserved, 2–50-character labels; conflicts require manual action.
+API schema changes fail closed rather than guessing ownership or permissions.
+
 ## Feature: Oban
 
 ### Installation behavior
@@ -587,7 +611,8 @@ A missing `SECRET_KEY_BASE` is imported from the environment or generated from 4
 cryptographically random bytes, Base64-encoded to 64 characters. Registry, R2, and
 Litestream credentials/configuration can still be imported from matching environment
 variables. By default, a separate `TAMAYOTCHI_BOOTSTRAP` item supplies a shared registry
-token and Cloudflare account/provisioning token, configured once. Missing storage and
+token, Cloudflare account/provisioning token, and GoatCounter main-site URL/API
+token, configured once. Missing storage and
 backup buckets are created and separate bucket-scoped account-owned tokens issued;
 their IDs and SHA-256-derived S3 secrets are saved directly in the app item. Runtime
 credentials never receive the bootstrap token or administrative token permissions.
@@ -634,7 +659,9 @@ with missing keys, or an existing deterministic Cloudflare token name, blocks
 reissuance after interruption. Pagination is checked. There is no cross-provider
 transaction, rollback, automatic retry, rotation, or revocation. Detailed bootstrap,
 permissions, recovery, and security boundaries are in [`secrets.md`](secrets.md).
-Tests use fake clients and a synthetic CLI/vault, never live accounts.
+Tests use fake clients and a synthetic CLI/vault, never live accounts. Generated
+credential smoke tests inject a fake HTTP transport in a disposable package copy;
+no production CLI switch can redirect GoatCounter bootstrap credentials.
 
 ## Feature: SQLite backups
 

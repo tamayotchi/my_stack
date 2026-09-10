@@ -27,7 +27,11 @@ bootstrap = {
     'id': 'b' * 26, 'title': 'TAMAYOTCHI_BOOTSTRAP', 'category': 'SECURE_NOTE',
     'vault': {'id': vault}, 'version': 1,
     'fields': [{'id': 'r' * 26, 'label': 'KAMAL_REGISTRY_PASSWORD',
-                'type': 'CONCEALED', 'value': 'ghp_' + 'a' * 36}]
+                'type': 'CONCEALED', 'value': 'ghp_' + 'a' * 36},
+               {'id': 'u' * 26, 'label': 'GOATCOUNTER_SITE_URL', 'type': 'CONCEALED',
+                'value': 'https://smoke-parent.goatcounter.com'},
+               {'id': 'g' * 26, 'label': 'GOATCOUNTER_API_TOKEN', 'type': 'CONCEALED',
+                'value': 'g' * 48}]
 }
 if args[0] == 'signin':
     sys.exit(0)
@@ -48,6 +52,15 @@ elif args[:2] == ['item', 'create']:
     result.update(id=item, vault={'id': vault}, version=1)
     state['writes'] += 1
     state['item'] = result
+elif args[:2] == ['item', 'edit']:
+    assert args[2] == item
+    result = json.load(sys.stdin)
+    assert all(f in result['fields'] for f in state['item']['fields'])
+    assert len(result['fields']) == 6
+    assert result['fields'][-1]['label'] == 'TAMAYOTCHI_GOATCOUNTER_PROVISIONING'
+    result.update(id=item, vault={'id': vault}, version=state['item']['version'] + 1)
+    state['writes'] += 1
+    state['item'] = result
 else:
     sys.exit(1)
 state['reads'] += 1
@@ -57,11 +70,48 @@ print(json.dumps(result))
 path.chmod(0o755)
 PY
 
+# Inject only the HTTP transport in a disposable source copy. There is no test
+# provider override in the shipped CLI, and no request reaches GoatCounter.
+mkdir -p "$workspace/stack"
+cp -a "$root/lib" "$root/priv" "$root/mix.exs" "$root/mix.lock" "$workspace/stack/"
+python3 - "$workspace/stack" <<'PY'
+import pathlib, sys
+root = pathlib.Path(sys.argv[1])
+http = root / 'lib/tamayotchi_stack/secrets/goat_counter_http.ex'
+source = http.read_text()
+assert source.count('&Req.request/1') == 1
+http.write_text(source.replace('&Req.request/1', '&TamayotchiStack.SmokeGoatTransport.request/1'))
+(root / 'lib/tamayotchi_stack/smoke_goat_transport.ex').write_text('''
+defmodule TamayotchiStack.SmokeGoatTransport do
+  def request(options) do
+    true = options[:url] in ["https://smoke-parent.goatcounter.com/api/v0/me", "https://smoke-parent.goatcounter.com/api/v0/sites"]
+    true = {"authorization", "Bearer " <> String.duplicate("g", 48)} in options[:headers]
+    path = System.fetch_env!("TSTACK_TEST_OP_STATE")
+    state = path |> File.read!() |> Jason.decode!()
+    sites = Map.get(state, "goat_sites", [%{"id" => 1, "code" => "smoke-parent", "parent" => nil, "state" => "a"}])
+    {response, state} = case {options[:method], URI.parse(options[:url]).path} do
+      {:get, "/api/v0/me"} -> {%{"token" => %{"permissions" => 24}}, state}
+      {:get, "/api/v0/sites"} -> {%{"sites" => sites}, state}
+      {:put, "/api/v0/sites"} ->
+        payload = Jason.decode!(options[:body])
+        "credential-app" = payload["code"]
+        false = Enum.any?(sites, &(&1["code"] == payload["code"]))
+        created = Map.merge(payload, %{"id" => 2, "parent" => 1, "state" => "a"})
+        {created, state |> Map.put("goat_sites", sites ++ [created]) |> Map.update("goat_writes", 1, &(&1 + 1))}
+    end
+    state = Map.update(state, "goat_requests", 1, &(&1 + 1))
+    File.write!(path, Jason.encode!(state))
+    {:ok, %{status: 200, body: Jason.encode!(response)}}
+  end
+end
+''')
+PY
+
 export PATH="$workspace/tools:$PATH"
 export MIX_ARCHIVES="$workspace/archives"
-export TAMAYOTCHI_STACK_DEV_PATH="$root"
+export TAMAYOTCHI_STACK_DEV_PATH="$workspace/stack"
 export TSTACK_TEST_OP_STATE="$workspace/synthetic-vault.json"
-unset SECRET_KEY_BASE KAMAL_REGISTRY_PASSWORD CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN OP_SERVICE_ACCOUNT_TOKEN
+unset SECRET_KEY_BASE KAMAL_REGISTRY_PASSWORD CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN OP_SERVICE_ACCOUNT_TOKEN GOATCOUNTER_SITE_URL GOATCOUNTER_API_TOKEN
 # Import synthetic backup credentials so the real generator never contacts Cloudflare.
 export LITESTREAM_ENDPOINT=https://synthetic-account.r2.cloudflarestorage.com
 export LITESTREAM_ACCESS_KEY_ID=synthetic-backup-access
@@ -109,9 +159,11 @@ mix tamayotchi.doctor --check --format json
 python3 - "$TSTACK_TEST_OP_STATE" <<'PY'
 import base64, json, pathlib, sys
 state = json.loads(pathlib.Path(sys.argv[1]).read_text())
-assert state['writes'] == 1
+assert state['writes'] == 2
+assert state['goat_writes'] == 1
+assert len(state['goat_sites']) == 2
 fields = state['item']['fields']
-assert len(fields) == 5 and all(f['type'] == 'CONCEALED' for f in fields)
+assert len(fields) == 6 and all(f['type'] == 'CONCEALED' for f in fields)
 values = {f['label']: f['value'] for f in fields}
 assert len(base64.b64decode(values['SECRET_KEY_BASE'])) == 48
 assert values['KAMAL_REGISTRY_PASSWORD'] == 'ghp_' + 'a' * 36

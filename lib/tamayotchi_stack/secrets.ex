@@ -14,7 +14,7 @@ defmodule TamayotchiStack.Secrets do
     ~w(R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY),
     ~w(LITESTREAM_ACCESS_KEY_ID LITESTREAM_SECRET_ACCESS_KEY)
   ]
-  @markers ~w(TAMAYOTCHI_R2_PROVISIONING TAMAYOTCHI_BACKUPS_PROVISIONING)
+  @markers ~w(TAMAYOTCHI_R2_PROVISIONING TAMAYOTCHI_BACKUPS_PROVISIONING TAMAYOTCHI_GOATCOUNTER_PROVISIONING)
   @id ~r/\A[a-z0-9]{26}\z/
   @identifier ~r/\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
   @metadata ~w(id version title category fields sections urls tags)
@@ -29,7 +29,7 @@ defmodule TamayotchiStack.Secrets do
       igniter
       |> Igniter.delay_task("tamayotchi.secrets", ["--yes"])
       |> Igniter.add_notice(
-        "After accepting these files, missing credentials will be generated/provisioned and saved in 1Password. Authenticate with op and configure SERVER/TAMAYOTCHI_BOOTSTRAP once (see mix help tamayotchi.secrets). Use --no-secrets for offline/file-only setup. Sync never provisions credentials."
+        "After accepting these files, missing credentials will be generated/provisioned and saved in 1Password, and managed Phoenix apps will get a GoatCounter site. Authenticate with op and configure SERVER/TAMAYOTCHI_BOOTSTRAP once (see mix help tamayotchi.secrets). Use --no-secrets for offline/file-only setup. Sync never provisions credentials."
       )
     else
       _ -> igniter

@@ -1,7 +1,8 @@
 # Automatic credentials in 1Password
 
 `mix tamayotchi.new` and `mix tamayotchi.setup` automatically set up missing
-credentials after their file changes are accepted. **No separate secrets command
+credentials and the Phoenix app's GoatCounter site after their file changes are
+accepted. **No separate secrets command
 is required for the normal flow.** Existing credentials are never rotated.
 
 ## One-time bootstrap
@@ -15,13 +16,15 @@ is required for the normal flow.** Existing credentials are never rotated.
    Bash, coreutils `head`/GNU `timeout`, and `kill` are also required.
 2. In `instaleap-llc.1password.com`, vault `SERVER`, create a **Secure Note** named
    **`TAMAYOTCHI_BOOTSTRAP`** with these exact custom field labels. Choose the
-   **Password/concealed field type for all three**, including the account ID:
+   **Password/concealed field type for all five**, including the account ID and URL:
 
    | Field | Set once | Needed for |
    | --- | --- | --- |
    | `KAMAL_REGISTRY_PASSWORD` | GitHub classic PAT with `read:packages`/`write:packages`, concealed | Local Kamal + GHCR |
    | `CLOUDFLARE_ACCOUNT_ID` | Your 32-character Cloudflare account ID | R2 or SQLite backups |
    | `CLOUDFLARE_API_TOKEN` | A Cloudflare provisioning API token, concealed | R2 or SQLite backups |
+   | `GOATCOUNTER_SITE_URL` | Your main `https://<site>.goatcounter.com` URL, without a path | Phoenix analytics |
+   | `GOATCOUNTER_API_TOKEN` | API token with **Read sites + Create sites** permissions | Phoenix analytics |
 
 3. Enable R2/billing in that Cloudflare account. Create the provisioning token
    with **Account API Tokens Write** and **Workers R2 Storage Write** for that
@@ -31,15 +34,52 @@ is required for the normal flow.** Existing credentials are never rotated.
    This is a powerful provisioning credential: restrict access and never put it
    in the application's item, deployment environment, or repository.
 
-Use actual credential values in those fields, not `op://` reference strings.
+4. In your main GoatCounter account, open **your username → API** and create a
+   token with **Read sites** and **Create sites** permissions, with access to the
+   main site. Store it in `GOATCOUNTER_API_TOKEN` and put that main site's HTTPS
+   origin in `GOATCOUNTER_SITE_URL`. The initial account/token is a one-time manual
+   step; Stack creates child sites, not new accounts.
+
+Use actual credential values in those fields, not placeholders or `op://` reference strings.
 The bootstrap item is only read, never modified. Every Phoenix app includes SQLite
-backups and Kamal, so it needs both Cloudflare and registry bootstrap credentials,
+backups, Kamal, and GoatCounter, so it needs Cloudflare, registry, and GoatCounter
+bootstrap credentials,
 even when application R2 storage is disabled. Plain Mix apps (`--no-phoenix`) need
 no registry credential; they need Cloudflare only if R2 is selected. The tool cannot
 create its own initial Cloudflare/1Password authorization
 or manufacture a valid GitHub PAT. **You fill these fields once, not for each new
 app.** Only expired/revoked bootstrap credentials need replacement. Each app gets
 its own generated Phoenix key and separately issued Cloudflare credentials.
+
+### GoatCounter site provisioning
+
+Full credential setup for managed Phoenix reads `GET /api/v0/me` and
+`GET /api/v0/sites` on the configured main site. It reuses an active owned site
+with the derived app code, including the main site itself when its code matches.
+Existing site settings, linking domain, and dashboard visibility are preserved.
+Otherwise, after confirmation, `PUT /api/v0/sites` creates a child site and a
+read-back verifies its identity. New sites use the literal deployment `PHX_HOST`
+as their HTTPS linking domain, defaulting to `<app-slug>.tamayotchi.com`.
+
+A concealed `TAMAYOTCHI_GOATCOUNTER_PROVISIONING` checkpoint is saved in the app
+item before creation. If a request or read-back fails, a subsequent run can
+recognize the existing owned site without another PUT. If the checkpoint exists
+but that site is absent, or the parent target changed, creation is refused until
+manual reconciliation. Markers are never cleared automatically. Provider writes
+are not retried or redirected; requests are paced for the hosted API rate limit.
+
+Full reruns recheck GoatCounter read-only, even when all credential values already
+exist. `--only` skips GoatCounter entirely; `--no-provision` skips both Cloudflare
+and GoatCounter. Setup `--no-secrets` and sync only configure the tracking files.
+The API token remains bootstrap authorization: it is never placed in app items,
+browser JavaScript, or deployment environments. Tracking pageviews needs no API key.
+
+Only hosted `https://<site>.goatcounter.com` main-site origins are supported.
+Self-hosted/custom API origins require manual setup. App codes must be valid,
+unreserved GoatCounter codes (2–50 characters); unavailable global names fail
+rather than adopting someone else's site or silently choosing another URL.
+The API is unversioned `/api/v0`; unexpected response shapes are refused.
+See [GoatCounter's API documentation](https://www.goatcounter.com/help/api).
 
 ### GitHub is the registry, not the deployment runner
 
@@ -88,6 +128,7 @@ that omitted backups; application R2 storage is independent.
 | Selected feature | Application fields | Missing-value behavior |
 | --- | --- | --- |
 | Phoenix | `SECRET_KEY_BASE` | Generate 48 cryptographically random bytes, Base64-encoded |
+| Phoenix / GoatCounter | Concealed creation checkpoint; no runtime API token | Reuse an owned site or create the app's child site |
 | Kamal (included with Phoenix) | `KAMAL_REGISTRY_PASSWORD` | Copy only this field from the bootstrap item |
 | R2 | `R2_ACCOUNT_ID` | Use the bootstrap Cloudflare account |
 | R2 | `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` | Issue a bucket-scoped object read/write token |
@@ -102,8 +143,9 @@ The confirmation plan includes these presentation changes; `--only` limits the f
 
 Only missing values are filled. Explicit environment variables of the same name
 can import externally issued credentials instead; existing item values always
-win. `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` environment variables may
-supply bootstrap authorization in CI, without storing them in source files.
+win. `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, `GOATCOUNTER_SITE_URL`, and
+`GOATCOUNTER_API_TOKEN` environment variables may supply bootstrap configuration
+in CI, without storing them in source files.
 
 For Cloudflare issuance, the tool creates missing buckets or reuses existing ones
 without changing their configuration. It uses account-owned tokens with only the

@@ -1,7 +1,8 @@
 defmodule Mix.Tasks.Tamayotchi.Secrets do
   @shortdoc "Saves missing application credentials in 1Password"
   @moduledoc """
-  Plans and saves missing credentials for features in `.tamayotchi.exs`.
+  Plans and saves missing credentials and provisions the managed Phoenix app's
+  GoatCounter site using features in `.tamayotchi.exs`.
   Managed Phoenix + SQLite implies backup credentials, including for older manifests.
   Does not start the application or modify repository files. Setup/install run
   this automatically after accepted file changes unless --no-secrets was selected.
@@ -13,7 +14,10 @@ defmodule Mix.Tasks.Tamayotchi.Secrets do
   item to copy KAMAL_REGISTRY_PASSWORD and authorize Cloudflare to create missing
   R2 buckets and issue separate bucket-scoped storage/backup credentials. Set up
   CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN there once. Explicit environment
-  imports still work. Existing non-empty fields are never rotated or replaced.
+  imports still work. GOATCOUNTER_SITE_URL and GOATCOUNTER_API_TOKEN authorize
+  creation of missing GoatCounter child sites; existing owned sites keep their settings.
+  Neither administrative API token is copied into the app item or runtime.
+  Existing non-empty fields are never rotated or replaced.
   All inputs are preflighted before writing; --only permits deliberate partial setup.
   Every managed field is concealed, including account IDs, endpoints, and markers.
   Existing managed text fields are concealed without changing their values.
@@ -28,8 +32,11 @@ defmodule Mix.Tasks.Tamayotchi.Secrets do
 
   In the selected vault (default SERVER), create a Secure Note named
   TAMAYOTCHI_BOOTSTRAP. Add actual values in custom fields KAMAL_REGISTRY_PASSWORD,
-  CLOUDFLARE_ACCOUNT_ID, and CLOUDFLARE_API_TOKEN as needed by your features.
-  Set all three custom fields to Password/concealed, including the account ID.
+  CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, GOATCOUNTER_SITE_URL, and
+  GOATCOUNTER_API_TOKEN as needed by your features. Set every field to
+  Password/concealed, including identifiers and URLs. For GoatCounter, use your
+  existing main https://<site>.goatcounter.com URL and an API token with Read sites
+  and Create sites permissions (username menu → API).
   For local Kamal + GHCR (no GitHub Actions), use a GitHub classic PAT with only
   read:packages/write:packages for the registry field. Your gh OAuth token is not
   a registry PAT; avoid repo/workflow/delete:packages scopes. Create the PAT once:
@@ -44,14 +51,14 @@ defmodule Mix.Tasks.Tamayotchi.Secrets do
   ## Options
 
     * `--yes` / `-y` - explicitly authorize writes without a confirmation prompt
-    * `--only FIELD,FIELD` - operate on named fields from enabled features
+    * `--only FIELD,FIELD` - operate on named fields; skips GoatCounter provisioning
     * `--account HOST` - 1Password sign-in hostname (default: stack deployment convention)
     * `--vault NAME_OR_ID` - existing vault (default: SERVER)
     * `--item TITLE_OR_ID` - item (default: uppercase application name)
     * `--bootstrap-item TITLE_OR_ID` - separate shared item in the same vault
       (default: TAMAYOTCHI_BOOTSTRAP)
-    * `--provision` / `--no-provision` - Cloudflare issuance and bootstrap lookup
-      (default: yes); disable for manual imports or other S3-compatible providers
+    * `--provision` / `--no-provision` - Cloudflare and GoatCounter provisioning
+      and bootstrap lookup (default: yes); disable for manual configuration
 
   Account/vault/item overrides do not update `.kamal/secrets`; keep deployment
   references aligned. Item names must be unambiguous. Existing items are edited
@@ -61,8 +68,8 @@ defmodule Mix.Tasks.Tamayotchi.Secrets do
   Secret values are passed to op as JSON through stdin. CLI responses and errors
   are captured, never printed. No secret-value flags, rotation, or automatic
   rollback/revocation are supported. A durable provisioning marker precedes each
-  Cloudflare write and blocks automatic reissuance after interruption. Inspect
-  both systems after ambiguous failures. Requires op, Bash, coreutils, and kill on POSIX.
+  Cloudflare issuance or GoatCounter creation and blocks blind reissuance after
+  interruption. Inspect the affected providers after ambiguous failures. Requires op, Bash, coreutils, and kill on POSIX.
   """
 
   use Mix.Task
@@ -160,7 +167,7 @@ defmodule Mix.Tasks.Tamayotchi.Secrets do
         Mix.raise(reason)
 
       not Automation.changed?(plan) ->
-        Mix.shell().info("All selected fields already exist. Nothing changed.")
+        Mix.shell().info("All selected credentials and sites already exist. Nothing changed.")
 
       options[:yes] ||
           Prompt.confirm(
@@ -170,7 +177,7 @@ defmodule Mix.Tasks.Tamayotchi.Secrets do
         case Automation.apply(plan) do
           {:ok, :saved} ->
             Mix.shell().info(
-              "Selected credentials saved and verified in 1Password. No repository files changed."
+              "Selected credentials saved and verified in 1Password; selected service setup completed. No repository files changed."
             )
 
           {:ok, :unchanged} ->

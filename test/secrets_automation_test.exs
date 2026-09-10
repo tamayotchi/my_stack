@@ -10,6 +10,8 @@ defmodule TamayotchiStack.SecretsAutomationTest do
   @permission String.duplicate("c", 32)
   @token String.duplicate("test-only-provider-token", 2)
   @registry "ghp_" <> String.duplicate("p", 36)
+  @goat_url "https://parent.goatcounter.com"
+  @goat_token String.duplicate("goat-test-token", 4)
   @manifest [schema: 1, app: :my_app, features: [phoenix: [], kamal: [], r2: [], backups: []]]
 
   test "default preview is read-only; apply generates and saves every field with separate scoped keys" do
@@ -75,17 +77,18 @@ defmodule TamayotchiStack.SecretsAutomationTest do
     assert value(first_pair, "R2_SECRET_ACCESS_KEY")
   end
 
-  test "reruns preserve keys, notes, and metadata without bootstrap or Cloudflare access" do
+  test "reruns preserve keys and metadata, rechecking GoatCounter without Cloudflare access" do
     {deps, state} = fixture()
     {:ok, plan} = Automation.prepare(@manifest, [], deps)
     assert {:ok, :saved} = Automation.apply(plan)
     before = Agent.get(state, & &1.item)
-    Agent.update(state, &%{&1 | events: [], bootstrap: nil})
+    Agent.update(state, &%{&1 | events: []})
     assert {:ok, rerun} = Automation.prepare(@manifest, [], deps)
     assert {:ok, :unchanged} = Automation.apply(rerun)
     assert Agent.get(state, & &1.item) == before
     assert writes(state) == []
     refute Enum.any?(Agent.get(state, & &1.events), &match?({:cf_read, _}, &1))
+    assert Enum.any?(Agent.get(state, & &1.events), &match?({:goat_read, _}, &1))
   end
 
   test "missing bootstrap inputs prevent all writes, while the Phoenix-only subset needs no bootstrap" do
@@ -262,9 +265,9 @@ defmodule TamayotchiStack.SecretsAutomationTest do
 
     {deps, state} = fixture(bootstrap: shared)
     manifest = Keyword.put(@manifest, :features, phoenix: [], kamal: [])
-    assert {:ok, plan} = Automation.prepare(manifest, [], deps)
+    assert {:ok, plan} = Automation.prepare(manifest, [only: "KAMAL_REGISTRY_PASSWORD"], deps)
     assert {:ok, :saved} = Automation.apply(plan)
-    assert length(Agent.get(state, & &1.item["fields"])) == 2
+    assert length(Agent.get(state, & &1.item["fields"])) == 1
     refute Enum.any?(writes(state), &match?({:cf_write, _}, &1))
   end
 
@@ -328,7 +331,10 @@ defmodule TamayotchiStack.SecretsAutomationTest do
     assert {:ok, plan} =
              Automation.prepare(
                manifest,
-               [deployment: "registry:\n  server: 'ghcr.io' # keep\n  username: tamayotchi\n"],
+               [
+                 deployment:
+                   "registry:\n  server: 'ghcr.io' # keep\n  username: tamayotchi\nenv:\n  clear:\n    PHX_HOST: my-app.example.com\n"
+               ],
                deps
              )
 
@@ -424,6 +430,152 @@ defmodule TamayotchiStack.SecretsAutomationTest do
     assert writes(state) == []
   end
 
+  test "GoatCounter creation uses a concealed checkpoint and never copies its bootstrap token" do
+    {deps, state} = fixture(goat_sites: [goat_parent()])
+    assert {:ok, plan} = Automation.prepare(@manifest, [], deps)
+    assert Automation.ready?(plan)
+    refute plan.goatcounter.exists?
+    assert writes(state) == []
+    refute Automation.format(plan) <> inspect(plan.goatcounter) =~ @goat_token
+    assert {:ok, :saved} = Automation.apply(plan)
+    data = Agent.get(state, & &1)
+    assert value(data.item, "TAMAYOTCHI_GOATCOUNTER_PROVISIONING") == @goat_url <> "/my-app"
+    assert value(data.item, "GOATCOUNTER_API_TOKEN") == nil
+    assert value(data.item, "GOATCOUNTER_SITE_URL") == nil
+    assert data.bootstrap == bootstrap()
+    assert Enum.all?(data.item["fields"], &(&1["type"] == "CONCEALED"))
+    assert List.last(data.goat_sites)["link_domain"] == "https://my-app.tamayotchi.com"
+    index = Enum.find_index(data.events, &match?({:goat_write, _}, &1))
+
+    assert Enum.any?(Enum.take(data.events, index), fn
+             {:op_write, payload} -> value(payload, "TAMAYOTCHI_GOATCOUNTER_PROVISIONING")
+             _ -> false
+           end)
+
+    before = data.item
+    Agent.update(state, &%{&1 | events: []})
+    assert {:ok, rerun} = Automation.prepare(@manifest, [], deps)
+    assert {:ok, :unchanged} = Automation.apply(rerun)
+    assert Agent.get(state, & &1.item) == before
+    assert writes(state) == []
+  end
+
+  test "existing owned sites retain custom settings and do not need Create sites permission" do
+    {deps, state} = fixture(goat_permissions: 8)
+    before = Agent.get(state, & &1.goat_sites)
+    assert {:ok, plan} = Automation.prepare(@manifest, [], deps)
+    assert plan.goatcounter.exists?
+    assert {:ok, :saved} = Automation.apply(plan)
+    assert Agent.get(state, & &1.goat_sites) == before
+    refute Enum.any?(writes(state), &match?({:goat_write, _}, &1))
+  end
+
+  test "missing GoatCounter configuration or permissions blocks ALL writes" do
+    missing =
+      Map.update!(
+        bootstrap(),
+        "fields",
+        &Enum.reject(&1, fn f -> String.starts_with?(f["label"], "GOATCOUNTER_") end)
+      )
+
+    {deps, state} = fixture(bootstrap: missing)
+    assert {:ok, plan} = Automation.prepare(@manifest, [], deps)
+    refute Automation.ready?(plan)
+    assert Automation.format(plan) =~ "GOATCOUNTER_SITE_URL"
+    assert {:error, _} = Automation.apply(plan)
+    assert writes(state) == []
+
+    for permission <- [0, 8] do
+      {deps, state} = fixture(goat_sites: [goat_parent()], goat_permissions: permission)
+      assert {:error, _} = Automation.prepare(@manifest, [], deps)
+      assert writes(state) == []
+    end
+  end
+
+  test "ambiguous GoatCounter creation reconciles an owned site without a second PUT" do
+    {deps, state} = fixture(goat_sites: [goat_parent()], goat_fail: :lost_response)
+    {:ok, plan} = Automation.prepare(@manifest, [], deps)
+    assert {:error, _} = Automation.apply(plan)
+    assert value(Agent.get(state, & &1.item), "TAMAYOTCHI_GOATCOUNTER_PROVISIONING")
+    before = writes(state)
+    assert {:ok, rerun} = Automation.prepare(@manifest, [], deps)
+    assert {:ok, :unchanged} = Automation.apply(rerun)
+    assert writes(state) == before
+
+    Agent.update(state, &%{&1 | goat_sites: [goat_parent()]})
+    assert {:error, message} = Automation.prepare(@manifest, [], deps)
+    assert message =~ "automatic recreation"
+    assert writes(state) == before
+  end
+
+  test "full setup adds GoatCounter even when all application credentials already exist" do
+    {deps, state} = fixture()
+    {:ok, plan} = Automation.prepare(@manifest, [], deps)
+    assert {:ok, :saved} = Automation.apply(plan)
+    Agent.update(state, &%{&1 | goat_sites: [goat_parent()], events: []})
+    assert {:ok, plan} = Automation.prepare(@manifest, [], deps)
+    assert Automation.changed?(plan)
+    assert {:ok, :saved} = Automation.apply(plan)
+    refute Enum.any?(writes(state), &match?({:cf_write, _}, &1))
+    assert length(Enum.filter(writes(state), &match?({:goat_write, _}, &1))) == 1
+  end
+
+  test "partial, manual, and non-Phoenix setup never call GoatCounter" do
+    for {manifest, opts} <- [
+          {@manifest, [only: "SECRET_KEY_BASE"]},
+          {@manifest, [provision: false]},
+          {[schema: 1, app: :my_app, features: [r2: []]], []}
+        ] do
+      {deps, state} = fixture()
+      assert {:ok, plan} = Automation.prepare(manifest, opts, deps)
+      assert is_nil(plan.goatcounter)
+
+      refute Enum.any?(Agent.get(state, & &1.events), fn {kind, _} ->
+               kind in [:goat_read, :goat_write]
+             end)
+    end
+  end
+
+  test "GoatCounter HTTP failures and schema errors are not mislabeled as missing permissions" do
+    for {response, expected} <- [
+          {{:error, "GoatCounter rate limit reached (HTTP 429)"}, "HTTP 429"},
+          {{:error, "GoatCounter rejected authentication (HTTP 401)"}, "HTTP 401"},
+          {{:ok, %{"token" => %{"permissions" => "unexpected-format"}}},
+           "unexpected permissions response"}
+        ] do
+      {deps, state} = fixture()
+      deps = Keyword.put(deps, :goatcounter, fn :get, _, "/api/v0/me", _, _ -> response end)
+      assert {:error, message} = Automation.prepare(@manifest, [], deps)
+      assert message =~ expected
+      refute message =~ "missing Read sites"
+      assert writes(state) == []
+    end
+  end
+
+  test "unowned, duplicate, inactive sites and checkpoint retargeting are refused" do
+    for sites <- [
+          [goat_parent(), Map.put(goat_site(), "parent", 99)],
+          [goat_parent(), goat_site(), goat_site()],
+          [goat_parent(), Map.put(goat_site(), "state", "d")],
+          [goat_parent(), Map.put(goat_site(), "state", "active")],
+          [Map.put(goat_parent(), "parent", 99), goat_site()]
+        ] do
+      {deps, state} = fixture(goat_sites: sites)
+      assert {:error, _} = Automation.prepare(@manifest, [], deps)
+      assert writes(state) == []
+    end
+
+    {deps, state} =
+      fixture(
+        item:
+          item(%{"TAMAYOTCHI_GOATCOUNTER_PROVISIONING" => "https://other.goatcounter.com/my-app"})
+      )
+
+    assert {:error, message} = Automation.prepare(@manifest, [], deps)
+    assert message =~ "retargeting"
+    assert writes(state) == []
+  end
+
   defp fixture(options \\ []) do
     initial =
       Map.merge(
@@ -434,7 +586,10 @@ defmodule TamayotchiStack.SecretsAutomationTest do
           tokens: [],
           events: [],
           public: false,
-          fail: nil
+          fail: nil,
+          goat_permissions: 24,
+          goat_sites: [goat_parent(), goat_site()],
+          goat_fail: nil
         },
         Map.new(options)
       )
@@ -448,7 +603,13 @@ defmodule TamayotchiStack.SecretsAutomationTest do
       Agent.get_and_update(state, &cloud(&1, method, path, body))
     end
 
-    {[client: op, cloudflare: cf, env: fn _ -> nil end], state}
+    goat = fn method, origin, path, token, body ->
+      assert origin == @goat_url
+      assert token == @goat_token
+      Agent.get_and_update(state, &goat(&1, method, path, body))
+    end
+
+    {[client: op, cloudflare: cf, goatcounter: goat, env: fn _ -> nil end], state}
   end
 
   defp op(data, ["whoami" | _], _), do: {{:ok, %{"url" => "instaleap-llc.1password.com"}}, data}
@@ -545,6 +706,41 @@ defmodule TamayotchiStack.SecretsAutomationTest do
     end
   end
 
+  defp goat(data, method, path, body) do
+    event = if method == :get, do: :goat_read, else: :goat_write
+    data = %{data | events: data.events ++ [{event, {path, body}}]}
+
+    case {method, path} do
+      {:get, "/api/v0/me"} ->
+        {{:ok, %{"token" => %{"permissions" => data.goat_permissions}}}, data}
+
+      {:get, "/api/v0/sites"} ->
+        {{:ok, %{"sites" => data.goat_sites}}, data}
+
+      {:put, "/api/v0/sites"} ->
+        created =
+          Map.merge(goat_site(), %{"code" => body.code, "link_domain" => body.link_domain})
+
+        data = %{data | goat_sites: data.goat_sites ++ [created]}
+
+        if data.goat_fail == :lost_response,
+          do: {{:error, "synthetic lost response"}, data},
+          else: {{:ok, created}, data}
+    end
+  end
+
+  # Captures the hosted API's wire state, not a human-readable display label.
+  defp goat_parent, do: %{"id" => 1, "code" => "parent", "parent" => nil, "state" => "a"}
+
+  defp goat_site,
+    do: %{
+      "id" => 2,
+      "code" => "my-app",
+      "parent" => 1,
+      "state" => "a",
+      "link_domain" => "https://custom.example.com"
+    }
+
   defp ok(result, info \\ %{}),
     do: {:ok, %{"result" => result, "success" => true, "result_info" => info}}
 
@@ -552,7 +748,7 @@ defmodule TamayotchiStack.SecretsAutomationTest do
     do:
       Agent.get(
         state,
-        &Enum.filter(&1.events, fn {kind, _} -> kind in [:op_write, :cf_write] end)
+        &Enum.filter(&1.events, fn {kind, _} -> kind in [:op_write, :cf_write, :goat_write] end)
       )
 
   defp value(item, name),
@@ -583,7 +779,9 @@ defmodule TamayotchiStack.SecretsAutomationTest do
     item(%{
       "CLOUDFLARE_ACCOUNT_ID" => @account,
       "CLOUDFLARE_API_TOKEN" => @token,
-      "KAMAL_REGISTRY_PASSWORD" => @registry
+      "KAMAL_REGISTRY_PASSWORD" => @registry,
+      "GOATCOUNTER_SITE_URL" => @goat_url,
+      "GOATCOUNTER_API_TOKEN" => @goat_token
     })
     |> Map.merge(%{"id" => @bootstrap, "title" => "TAMAYOTCHI_BOOTSTRAP"})
   end

@@ -32,8 +32,9 @@ a backup/restore before relying on the schedule.
 Credentials are set up in 1Password **automatically by default**, after configuration.
 Authenticate `op` and configure `SERVER/TAMAYOTCHI_BOOTSTRAP` once with your shared
 package-scoped GitHub classic PAT and Cloudflare provisioning authorization. Subsequent projects get
-new Phoenix secrets and separate bucket-scoped R2/backup keys without another
-command. Existing values are preserved. See [the bootstrap guide](../docs/secrets.md).
+new Phoenix secrets, separate bucket-scoped R2/backup keys, and their GoatCounter
+site without another command. Set `GOATCOUNTER_SITE_URL` and `GOATCOUNTER_API_TOKEN`
+in that bootstrap item once, with Read sites/Create sites permissions. Existing values are preserved. See [the bootstrap guide](../docs/secrets.md).
 Use `--no-secrets` for offline/file-only generation; this does not disable backups.
 
 Kamal runs locally and uses `ghcr.io/tamayotchi/<app-slug>` as the registry. No

@@ -4,9 +4,11 @@ defmodule TamayotchiStack.Secrets.Automation do
   alias TamayotchiStack.Secrets
   alias TamayotchiStack.Secrets.Cloudflare
   alias TamayotchiStack.Secrets.CloudflareHttp
+  alias TamayotchiStack.Secrets.GoatCounter
+  alias TamayotchiStack.Secrets.GoatCounterHttp
 
   @derive {Inspect, only: [:problems]}
-  defstruct [:base, :values, :jobs, :problems]
+  defstruct [:base, :values, :jobs, :problems, :goatcounter]
 
   @bootstrap "TAMAYOTCHI_BOOTSTRAP"
   @groups [
@@ -19,11 +21,24 @@ defmodule TamayotchiStack.Secrets.Automation do
   def prepare(manifest, options, dependencies \\ []) do
     with {:ok, base} <- Secrets.prepare(manifest, options, dependencies),
          :ok <- separate_bootstrap(base, options) do
-      if Keyword.get(options, :provision, true) and
-           Enum.any?(base.actions, &(elem(&1, 1) == :missing)) do
-        enrich(base, manifest[:app], options, dependencies)
+      cloud? = Enum.any?(base.actions, &(elem(&1, 1) == :missing))
+      goatcounter? = Keyword.has_key?(manifest[:features], :phoenix) and is_nil(options[:only])
+      initial = %__MODULE__{base: base, values: base.imports, jobs: [], problems: []}
+
+      if Keyword.get(options, :provision, true) and (cloud? or goatcounter?) do
+        with {:ok, shared} <-
+               Secrets.read_shared(base, Keyword.get(options, :bootstrap_item, @bootstrap)),
+             {:ok, plan} <-
+               if(cloud?,
+                 do: enrich(base, manifest[:app], options, dependencies, shared),
+                 else: {:ok, initial}
+               ) do
+          if goatcounter?,
+            do: prepare_goatcounter(plan, shared, manifest[:app], options, dependencies),
+            else: {:ok, plan}
+        end
       else
-        {:ok, %__MODULE__{base: base, values: base.imports, jobs: [], problems: []}}
+        {:ok, initial}
       end
     end
   rescue
@@ -50,11 +65,24 @@ defmodule TamayotchiStack.Secrets.Automation do
         "  Cloudflare: #{if job.exists?, do: "reuse", else: "create"} #{job.bucket}; issue token #{job.name}"
       end)
 
-    Enum.join([Secrets.format(plan.base), jobs | plan.problems] |> Enum.reject(&(&1 == "")), "\n")
+    goatcounter =
+      if plan.goatcounter,
+        do:
+          "  GoatCounter: #{if plan.goatcounter.exists?, do: "reuse", else: "create"} #{plan.goatcounter.code}.goatcounter.com",
+        else: ""
+
+    Enum.join(
+      [Secrets.format(plan.base), jobs, goatcounter | plan.problems] |> Enum.reject(&(&1 == "")),
+      "\n"
+    )
   end
 
   def ready?(plan), do: plan.problems == [] and Secrets.ready?(plan.base)
-  def changed?(plan), do: Secrets.changed?(plan.base)
+
+  def changed?(plan),
+    do:
+      Secrets.changed?(plan.base) or
+        (not is_nil(plan.goatcounter) and not plan.goatcounter.exists?)
 
   def apply(plan) do
     cond do
@@ -70,7 +98,42 @@ defmodule TamayotchiStack.Secrets.Automation do
     end
   end
 
-  defp enrich(base, app, options, dependencies) do
+  defp prepare_goatcounter(plan, shared, app, options, dependencies) do
+    env = Keyword.get(dependencies, :env, &System.get_env/1)
+    default_host = String.replace(to_string(app), "_", "-") <> ".tamayotchi.com"
+
+    with {:ok, url} <- shared_value(shared, "GOATCOUNTER_SITE_URL", env, true),
+         {:ok, token} <- shared_value(shared, "GOATCOUNTER_API_TOKEN", env, true),
+         true <- present?(url) and present?(token),
+         {:ok, host} <- setting(options[:deployment], "PHX_HOST", default_host, false),
+         {:ok, job} <-
+           GoatCounter.prepare(
+             plan.base,
+             app,
+             url,
+             token,
+             "https://" <> host,
+             Keyword.get(dependencies, :goatcounter, &GoatCounterHttp.request/5)
+           ) do
+      {:ok, %{plan | goatcounter: job}}
+    else
+      false ->
+        {:ok,
+         %{
+           plan
+           | problems:
+               plan.problems ++
+                 [
+                   "Set GOATCOUNTER_SITE_URL and GOATCOUNTER_API_TOKEN in the shared bootstrap item; use Read sites + Create sites permissions."
+                 ]
+         }}
+
+      {:error, _} = error ->
+        error
+    end
+  end
+
+  defp enrich(base, app, options, dependencies, shared) do
     env = Keyword.get(dependencies, :env, &System.get_env/1)
     title = Keyword.get(options, :bootstrap_item, @bootstrap)
 
@@ -84,8 +147,7 @@ defmodule TamayotchiStack.Secrets.Automation do
         missing?(base, access) and missing?(base, secret)
       end)
 
-    with {:ok, shared} <- Secrets.read_shared(base, title),
-         {:ok, registry} <-
+    with {:ok, registry} <-
            shared_value(
              shared,
              "KAMAL_REGISTRY_PASSWORD",
@@ -237,23 +299,24 @@ defmodule TamayotchiStack.Secrets.Automation do
          {:ok, initial} <- Secrets.replan(plan.base, plan.values),
          initial <- %{initial | actions: Enum.reject(initial.actions, &(elem(&1, 1) == :missing))},
          {:ok, initial} <- Secrets.save(initial),
-         {:ok, _saved} <-
+         {:ok, saved} <-
            Enum.reduce_while(plan.jobs, {:ok, initial}, fn {group, job}, {:ok, current} ->
              case issue_and_save(current, group, job) do
                {:ok, next} -> {:cont, {:ok, next}}
                error -> {:halt, error}
              end
-           end) do
+           end),
+         {:ok, _} <- GoatCounter.apply(saved, plan.goatcounter) do
       {:ok, :saved}
     else
       _ ->
         {:error,
-         "Automatic credential setup was not confirmed complete. Some credentials may already be saved and cloud resources may exist. Inspect 1Password and Cloudflare before retrying; provisioning markers prevent automatic reissuance. No existing credential was intentionally rotated."}
+         "Automatic credential setup was not confirmed complete. Some credentials may already be saved and cloud resources may exist. Inspect 1Password, Cloudflare, and GoatCounter before retrying; provisioning markers prevent automatic reissuance. No existing credential was intentionally rotated."}
     end
   rescue
     _ ->
       {:error,
-       "Automatic credential setup failed; inspect 1Password and Cloudflare before retrying. Details suppressed to protect credentials."}
+       "Automatic credential setup failed; inspect 1Password, Cloudflare, and GoatCounter before retrying. Details suppressed to protect credentials."}
   end
 
   defp issue_and_save(base, {_kind, _config, access, secret, _bucket, marker}, job) do
