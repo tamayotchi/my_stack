@@ -56,7 +56,8 @@ its own generated Phoenix key and separately issued Cloudflare credentials.
 Full credential setup for managed Phoenix reads `GET /api/v0/me` and
 `GET /api/v0/sites` on the configured main site. It reuses an active owned site
 with the derived app code, including the main site itself when its code matches.
-Existing site settings, linking domain, and dashboard visibility are preserved.
+Existing site settings, linking domain, and dashboard visibility are preserved,
+including when changing the public Phoenix/Kamal hostname with `setup --host`.
 Otherwise, after confirmation, `PUT /api/v0/sites` creates a child site and a
 read-back verifies its identity. New sites use the literal deployment `PHX_HOST`
 as their HTTPS linking domain, defaulting to `<app-slug>.tamayotchi.com`.
@@ -70,7 +71,7 @@ are not retried or redirected; requests are paced for the hosted API rate limit.
 
 Full reruns recheck GoatCounter read-only, even when all credential values already
 exist. `--only` skips GoatCounter entirely; `--no-provision` skips both Cloudflare
-and GoatCounter. Setup `--no-secrets` and sync only configure the tracking files.
+and GoatCounter. Setup `--no-secrets` and sync change files only.
 The API token remains bootstrap authorization: it is never placed in app items,
 browser JavaScript, or deployment environments. Tracking pageviews needs no API key.
 

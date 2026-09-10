@@ -72,6 +72,7 @@ defmodule TamayotchiStack.Features.Kamal do
           end
         end
       )
+      |> configure_public_host(options[:host])
       |> put_managed_file(".kamal/secrets", secrets(app_name, r2?), fn current ->
         if current in [secrets(app_name, false), secrets(app_name, true)] do
           {:ok, secrets(app_name, r2?)}
@@ -88,6 +89,23 @@ defmodule TamayotchiStack.Features.Kamal do
     else
       Igniter.add_issue(igniter, "Kamal deployment requires Phoenix with SQLite")
     end
+  end
+
+  defp configure_public_host(igniter, nil), do: igniter
+
+  defp configure_public_host(igniter, host) do
+    Igniter.update_file(igniter, "config/deploy.yml", fn source ->
+      current = Rewrite.Source.get(source, :content)
+
+      if managed_file?(current) do
+        case TamayotchiStack.PublicHost.patch(current, host) do
+          {:ok, updated} -> Rewrite.Source.update(source, :content, updated)
+          {:error, reason} -> {:error, reason}
+        end
+      else
+        {:error, "Refusing to update the public host in unmanaged config/deploy.yml"}
+      end
+    end)
   end
 
   defp put_database_files(igniter, app_name, base_module) do

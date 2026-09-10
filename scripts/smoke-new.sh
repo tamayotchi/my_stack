@@ -17,7 +17,7 @@ MIX_ARCHIVES="$archive_dir" mix archive.install --force tamayotchi_stack_new-0.1
 
 cd "$workspace"
 MIX_ARCHIVES="$archive_dir" TAMAYOTCHI_STACK_DEV_PATH="$root" \
-  mix tamayotchi.new smoke_app --r2 --no-secrets --yes
+  mix tamayotchi.new smoke_app --host smoke.public.example --r2 --no-secrets --yes
 
 cd "$app_path"
 test -d .git
@@ -35,12 +35,16 @@ rg -q 'R2_BUCKET: smoke-app' config/deploy.yml
 rg -q 'R2_SECRET_ACCESS_KEY' .kamal/secrets
 test -f rel/overlays/bin/docker-entrypoint
 rg -q -- "- home-server" config/deploy.yml
-rg -q "host: smoke-app.tamayotchi.com" config/deploy.yml
+rg -q "host: smoke.public.example" config/deploy.yml
+rg -q "PHX_HOST: smoke.public.example" config/deploy.yml
+rg -q 'https://smoke-app.goatcounter.com/count' assets/js/goatcounter.js
 rg -q -- "--from SERVER/SMOKE_APP KAMAL_REGISTRY_PASSWORD SECRET_KEY_BASE" .kamal/secrets
 sh -n .kamal/secrets rel/overlays/bin/server rel/overlays/bin/migrate rel/overlays/bin/docker-entrypoint
 ruby -e '
   require "yaml"
   config = YAML.safe_load_file("config/deploy.yml", aliases: true)
+  abort "Wrong public host" unless config.fetch("env").fetch("clear").fetch("PHX_HOST") == "smoke.public.example"
+  abort "Wrong proxy host" unless config.fetch("proxy").fetch("host") == "smoke.public.example"
   abort "Wrong web host" unless config.fetch("servers").fetch("web") == ["home-server"]
   abort "Backup host differs from web host" unless config.fetch("servers").fetch("backup").fetch("hosts") == ["home-server"]
   backup_keys = %w[LITESTREAM_ENDPOINT LITESTREAM_ACCESS_KEY_ID LITESTREAM_SECRET_ACCESS_KEY]
@@ -54,13 +58,13 @@ mix test
 MIX_ENV=prod mix release
 bash "$root/scripts/smoke-backups.sh" "$app_path/_build/prod/rel/smoke_app"
 
-# Exercise release-time R2 validation without making any storage requests.
+# Exercise release-time R2 and Phoenix endpoint configuration without network requests.
 SECRET_KEY_BASE=$(printf 'test-only-%.0s' {1..8}) \
-DATABASE_PATH="$app_path/smoke.db" PHX_HOST=localhost \
+DATABASE_PATH="$app_path/smoke.db" PHX_HOST=smoke.public.example \
 R2_ACCOUNT_ID=test-account R2_BUCKET=test-bucket \
 R2_ACCESS_KEY_ID=test-access-key R2_SECRET_ACCESS_KEY=test-secret-key \
   _build/prod/rel/smoke_app/bin/smoke_app eval \
-  'unless Application.fetch_env!(:smoke_app, :storage)[:adapter] == SmokeApp.Storage.R2, do: raise("wrong release storage adapter")'
+  'unless Application.fetch_env!(:smoke_app, :storage)[:adapter] == SmokeApp.Storage.R2, do: raise("wrong release storage adapter"); unless Application.fetch_env!(:smoke_app, SmokeAppWeb.Endpoint)[:url][:host] == "smoke.public.example", do: raise("wrong Phoenix public host")'
 
 mix help tamayotchi.secrets > /dev/null
 mix tamayotchi.sync --yes

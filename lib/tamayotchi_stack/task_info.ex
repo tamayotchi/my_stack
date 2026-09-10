@@ -11,6 +11,16 @@ defmodule TamayotchiStack.TaskInfo do
     end
   end
 
+  # Igniter reports conflicts and write failures as :issues, but Mix otherwise
+  # exits successfully. Do not let scripts mistake that result for applied setup.
+  def ensure_success!(:issues) do
+    Mix.raise(
+      "Tamayotchi could not apply all changes. Resolve the reported issues before retrying; inspect repository files if a write failed."
+    )
+  end
+
+  def ensure_success!(result), do: result
+
   @spec setup(keyword()) :: Igniter.Mix.Task.Info.t()
   def setup(overrides \\ []) do
     struct!(
@@ -22,6 +32,7 @@ defmodule TamayotchiStack.TaskInfo do
             phoenix: :boolean,
             r2: :boolean,
             proxy: :boolean,
+            host: :string,
             secrets: :boolean
           ],
           defaults: [],

@@ -113,9 +113,41 @@ adoption; new apps always use `phx.new --database sqlite3`.
 
 Choosing no proxy publishes Phoenix directly on port `4000` instead of running
 `kamal-proxy`; SQLite and backups remain included.
-`PHX_HOST` remains `<app-slug>.tamayotchi.com` in either mode, separate from the
+`PHX_HOST` defaults to `<app-slug>.tamayotchi.com` in either mode, separate from the
 SSH alias. Configure real DNS/public access yourself; no Cloudflare Tunnel,
 loopback-only binding, or firewall policy is installed by this host-name change.
+
+## Public hostname without renaming the project
+
+```sh
+# Inside tama_track:
+mix tamayotchi.setup --host track.tamayotchi.com --yes
+# Or for a new project:
+mix tamayotchi.new tama_track --host track.tamayotchi.com --yes
+```
+
+`--host` accepts a lowercase DNS hostname, not a URL, port, or wildcard, and
+requires Phoenix. It persists as `phoenix: [host: "track.tamayotchi.com"]` in
+`.tamayotchi.exs`. Setup and sync then manage only `env.clear.PHX_HOST` and the
+existing `proxy.host` in `config/deploy.yml`. Standard Phoenix runtime config
+uses `PHX_HOST` for its production endpoint; custom runtime config must honor it.
+With no proxy, only `PHX_HOST` changes. The patcher supports literal block-style
+YAML; hidden overrides, aliases/merges, flow collections, escaped double-quoted
+strings, and ambiguous layouts are refused. Quote opaque JSON/commands with single
+quotes or manage advanced layouts manually. Setup/install/sync return a nonzero
+exit status on conflicts or write failures; do not proceed to deployment on failure.
+
+This option affects Phoenix/Kamal only. The GoatCounter collector remains
+`https://tama-track.goatcounter.com/count`; existing site settings, including its
+website/linking URL, and history are unchanged. The app/module name, Kamal
+service/image/SSH destination, SQLite volume/path, buckets, backup prefixes, and
+1Password references are not renamed.
+
+Use the same option with another host later. Omitting it preserves the saved
+choice. `sync` stays file-only; `--no-secrets` also skips the normal credential/site
+provisioning step during setup. Without an explicit saved host, existing custom
+deployment hosts stay app-owned.
+This does **not** configure DNS, TLS, external routing, or deploy the application.
 
 ## Optional Cloudflare R2 storage
 

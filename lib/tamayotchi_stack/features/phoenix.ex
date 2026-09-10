@@ -4,9 +4,9 @@ defmodule TamayotchiStack.Features.Phoenix do
   alias TamayotchiStack.Manifest
   alias TamayotchiStack.Project
 
-  @spec configure(Igniter.t(), atom(), boolean()) :: Igniter.t()
-  def configure(igniter, app_name, enabled?) do
-    igniter = Manifest.set_feature(igniter, app_name, :phoenix, enabled?)
+  @spec configure(Igniter.t(), atom(), boolean(), keyword()) :: Igniter.t()
+  def configure(igniter, app_name, enabled?, options \\ []) do
+    igniter = Manifest.set_feature(igniter, app_name, :phoenix, enabled?, options)
 
     cond do
       not enabled? ->

@@ -9,6 +9,9 @@ defmodule Mix.Tasks.Tamayotchi.Sync do
 
   use Igniter.Mix.Task
 
+  @impl Mix.Task
+  def run(argv), do: argv |> super() |> TamayotchiStack.TaskInfo.ensure_success!()
+
   @impl Igniter.Mix.Task
   def info(argv, _composing_task) do
     TamayotchiStack.TaskInfo.reject_dry_run!(argv)

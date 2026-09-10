@@ -57,10 +57,12 @@ defmodule TamayotchiStack.Manifest do
          true <- Macro.quoted_literal?(quoted),
          {manifest, []} <- Code.eval_quoted(quoted),
          true <- Keyword.keyword?(manifest),
+         :ok <- unique_keys(manifest),
          @schema <- Keyword.get(manifest, :schema),
          app when is_atom(app) <- Keyword.get(manifest, :app),
          features when is_list(features) <- Keyword.get(manifest, :features, []),
          true <- Keyword.keyword?(features),
+         :ok <- unique_keys(features),
          :ok <- validate_features(features) do
       {:ok, manifest}
     else
@@ -107,8 +109,8 @@ defmodule TamayotchiStack.Manifest do
     kamal_config = Keyword.get(features, :kamal, [])
 
     cond do
-      Keyword.has_key?(features, :phoenix) and phoenix_config != [] ->
-        {:error, "#{@path} Phoenix configuration must be []"}
+      Keyword.has_key?(features, :phoenix) and not valid_phoenix_config?(phoenix_config) ->
+        {:error, "#{@path} Phoenix configuration must be [] or [host: \"your.public.hostname\"]"}
 
       Keyword.has_key?(features, :backups) and Keyword.get(features, :backups) != [] ->
         {:error,
@@ -123,6 +125,22 @@ defmodule TamayotchiStack.Manifest do
       true ->
         :ok
     end
+  end
+
+  defp unique_keys(config) do
+    keys = Keyword.keys(config)
+
+    if keys == Enum.uniq(keys),
+      do: :ok,
+      else:
+        {:error,
+         "#{@path} contains duplicate keys; keep one unambiguous value per setting or feature"}
+  end
+
+  defp valid_phoenix_config?(config) do
+    config == [] or
+      (is_list(config) and Keyword.keyword?(config) and Keyword.keys(config) == [:host] and
+         TamayotchiStack.PublicHost.valid?(config[:host]))
   end
 
   defp valid_kamal_config?(config) do

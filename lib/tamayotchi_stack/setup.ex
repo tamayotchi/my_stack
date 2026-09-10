@@ -6,27 +6,47 @@ defmodule TamayotchiStack.Setup do
   alias TamayotchiStack.Features.Kamal
   alias TamayotchiStack.Features.Phoenix
   alias TamayotchiStack.Features.R2
+  alias TamayotchiStack.Manifest
   alias TamayotchiStack.Project
+  alias TamayotchiStack.PublicHost
 
   @spec configure(Igniter.t(), keyword()) :: Igniter.t()
   def configure(igniter, options) do
     phoenix? = Keyword.fetch!(options, :phoenix)
 
-    if phoenix? and not Project.sqlite?(igniter) do
-      Igniter.add_issue(
-        igniter,
-        "Phoenix requires SQLite. This repository has no ecto_sqlite3 dependency. " <>
-          "Create a new app with mix tamayotchi.new, or explicitly configure/migrate this " <>
-          "repository to SQLite before retrying. No database backend or data was changed."
-      )
-    else
-      configure_supported(igniter, options, phoenix?)
+    cond do
+      Keyword.has_key?(options, :host) and not phoenix? ->
+        Igniter.add_issue(igniter, "--host requires Phoenix")
+
+      Keyword.has_key?(options, :host) and not PublicHost.valid?(options[:host]) ->
+        {:error, reason} = PublicHost.validate(options[:host])
+        Igniter.add_issue(igniter, reason)
+
+      phoenix? and not Project.sqlite?(igniter) ->
+        Igniter.add_issue(
+          igniter,
+          "Phoenix requires SQLite. This repository has no ecto_sqlite3 dependency. " <>
+            "Create a new app with mix tamayotchi.new, or explicitly configure/migrate this " <>
+            "repository to SQLite before retrying. No database backend or data was changed."
+        )
+
+      true ->
+        configure_supported(igniter, options, phoenix?)
     end
   end
 
   defp configure_supported(igniter, options, phoenix?) do
     app_name = Project.app_name(igniter)
-    igniter = Phoenix.configure(igniter, app_name, phoenix?)
+
+    saved_host =
+      case Manifest.read(igniter) do
+        {:ok, manifest} -> PublicHost.from_manifest(manifest)
+        _ -> nil
+      end
+
+    host = if phoenix?, do: Keyword.get(options, :host, saved_host)
+    host_options = if host, do: [host: host], else: []
+    igniter = Phoenix.configure(igniter, app_name, phoenix?, host_options)
 
     igniter =
       if phoenix? do
@@ -44,7 +64,7 @@ defmodule TamayotchiStack.Setup do
         else: []
 
     igniter
-    |> Kamal.configure(app_name, phoenix?, kamal_options)
+    |> Kamal.configure(app_name, phoenix?, kamal_options ++ host_options)
     |> Backups.configure(app_name, phoenix?)
   end
 end

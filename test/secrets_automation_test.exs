@@ -470,6 +470,34 @@ defmodule TamayotchiStack.SecretsAutomationTest do
     refute Enum.any?(writes(state), &match?({:goat_write, _}, &1))
   end
 
+  test "public host changes leave existing GoatCounter settings and credential identities untouched" do
+    {deps, state} =
+      fixture(
+        goat_permissions: 8,
+        item: item(%{"TAMAYOTCHI_GOATCOUNTER_PROVISIONING" => @goat_url <> "/my-app"})
+      )
+
+    {:ok, initial} = Automation.prepare(@manifest, [], deps)
+    assert {:ok, :saved} = Automation.apply(initial)
+    before = Agent.get(state, & &1)
+    Agent.update(state, &%{&1 | events: []})
+
+    for host <- ["track.tamayotchi.com", "better.example.com"] do
+      manifest = put_in(@manifest, [:features, :phoenix], host: host)
+      deployment = "env:\n  clear:\n    PHX_HOST: #{host}\n"
+      assert {:ok, plan} = Automation.prepare(manifest, [deployment: deployment], deps)
+      assert plan.goatcounter.code == "my-app"
+      assert plan.goatcounter.exists?
+      refute Automation.changed?(plan)
+      assert {:ok, :unchanged} = Automation.apply(plan)
+      assert writes(state) == []
+      after_state = Agent.get(state, & &1)
+
+      for key <- [:goat_sites, :item, :bootstrap, :tokens, :buckets],
+          do: assert(after_state[key] == before[key])
+    end
+  end
+
   test "missing GoatCounter configuration or permissions blocks ALL writes" do
     missing =
       Map.update!(
@@ -738,7 +766,10 @@ defmodule TamayotchiStack.SecretsAutomationTest do
       "code" => "my-app",
       "parent" => 1,
       "state" => "a",
-      "link_domain" => "https://custom.example.com"
+      "link_domain" => "https://custom.example.com",
+      "cname" => nil,
+      "setttings" => %{"public" => false},
+      "user_defaults" => %{"timezone" => "UTC"}
     }
 
   defp ok(result, info \\ %{}),

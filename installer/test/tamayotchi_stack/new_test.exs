@@ -84,6 +84,36 @@ defmodule TamayotchiStack.NewTest do
     assert "--no-secrets" in New.setup_arguments(true, false, true, false)
   end
 
+  test "forwards a public host and rejects invalid or non-Phoenix hosts before generation" do
+    arguments = New.setup_arguments(true, false, true, false, "track.tamayotchi.com")
+    assert ["--host", "track.tamayotchi.com"] in Enum.chunk_every(arguments, 2, 1, :discard)
+    assert :ok = New.validate_host("track.tamayotchi.com")
+
+    for host <- [
+          "https://track.tamayotchi.com",
+          "track.example.com:443",
+          "track",
+          "*.example.com",
+          "127.0.0.1",
+          "UPPER.example.com",
+          String.duplicate("x", 64) <> ".com"
+        ] do
+      assert_raise Mix.Error, ~r/--host must/, fn ->
+        Mix.Tasks.Tamayotchi.New.run(["invalid_host", "--host", host, "--yes"])
+      end
+    end
+
+    assert_raise Mix.Error, ~r/--host requires Phoenix/, fn ->
+      Mix.Tasks.Tamayotchi.New.run([
+        "invalid_host",
+        "--no-phoenix",
+        "--host",
+        "track.tamayotchi.com",
+        "--yes"
+      ])
+    end
+  end
+
   test "injects the stack dependency once" do
     mix_exs = """
     defmodule Demo.MixProject do

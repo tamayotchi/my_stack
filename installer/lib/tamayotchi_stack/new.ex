@@ -15,6 +15,19 @@ defmodule TamayotchiStack.New do
     end
   end
 
+  # Kept identical to the package validator; the archive runs before the package is installed.
+  def validate_host(host) do
+    if is_binary(host) and byte_size(host) <= 253 and
+         Regex.match?(
+           ~r/\A(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?\z/,
+           host
+         ),
+       do: :ok,
+       else:
+         {:error,
+          "--host must be a lowercase DNS hostname such as track.tamayotchi.com, without a scheme, path, port, or wildcard"}
+  end
+
   @spec goatcounter_endpoint_for_app(String.t()) :: String.t()
   def goatcounter_endpoint_for_app(app_name) do
     code = String.replace(app_name, "_", "-")
@@ -55,8 +68,10 @@ defmodule TamayotchiStack.New do
     end
   end
 
-  @spec setup_arguments(boolean(), boolean(), boolean(), boolean()) :: [String.t()]
-  def setup_arguments(phoenix?, r2?, proxy?, secrets? \\ true) do
+  @spec setup_arguments(boolean(), boolean(), boolean(), boolean(), String.t() | nil) :: [
+          String.t()
+        ]
+  def setup_arguments(phoenix?, r2?, proxy?, secrets? \\ true, host \\ nil) do
     arguments = [
       "tamayotchi_stack.install",
       "--yes",
@@ -64,6 +79,7 @@ defmodule TamayotchiStack.New do
       if(r2?, do: "--r2", else: "--no-r2")
     ]
 
+    arguments = if host, do: arguments ++ ["--host", host], else: arguments
     arguments = if secrets?, do: arguments, else: arguments ++ ["--no-secrets"]
     if phoenix?, do: arguments ++ [if(proxy?, do: "--proxy", else: "--no-proxy")], else: arguments
   end

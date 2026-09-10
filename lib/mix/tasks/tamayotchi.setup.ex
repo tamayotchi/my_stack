@@ -16,12 +16,17 @@ defmodule Mix.Tasks.Tamayotchi.Setup do
     * `--phoenix` / `--no-phoenix` - choose the Phoenix + SQLite + Kamal + backups stack
     * `--r2` / `--no-r2` - choose Cloudflare R2 storage (default: no on first setup)
     * `--proxy` / `--no-proxy` - choose kamal-proxy when using Phoenix
+    * `--host HOST` - persist Phoenix's PHX_HOST and Kamal's proxy host;
+      does not rename the app, resources, or change existing GoatCounter settings
     * `--secrets` / `--no-secrets` - set up missing credentials in 1Password after
       accepted file changes (default: yes); requires one-time bootstrap credentials
     * `--yes` - accept defaults, file changes, and automatic credential setup
   """
 
   use Igniter.Mix.Task
+
+  @impl Mix.Task
+  def run(argv), do: argv |> super() |> TamayotchiStack.TaskInfo.ensure_success!()
 
   @impl Igniter.Mix.Task
   def info(argv, _composing_task) do

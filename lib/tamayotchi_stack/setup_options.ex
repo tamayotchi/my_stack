@@ -38,6 +38,22 @@ defmodule TamayotchiStack.SetupOptions do
 
     [phoenix: phoenix?, r2: r2?]
     |> maybe_put_kamal_proxy(igniter, cli_options, phoenix?, yes?)
+    |> maybe_put_host(cli_options, phoenix?)
+  end
+
+  defp maybe_put_host(options, cli_options, phoenix?) do
+    case Keyword.fetch(cli_options, :host) do
+      :error ->
+        options
+
+      {:ok, host} ->
+        unless phoenix?, do: Mix.raise("--host requires Phoenix")
+
+        case TamayotchiStack.PublicHost.validate(host) do
+          :ok -> Keyword.put(options, :host, host)
+          {:error, reason} -> Mix.raise(reason)
+        end
+    end
   end
 
   defp r2_enabled?(igniter), do: feature_enabled?(igniter, :r2)

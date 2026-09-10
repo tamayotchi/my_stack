@@ -11,6 +11,8 @@ defmodule Mix.Tasks.Tamayotchi.New do
     * `--phoenix` / `--no-phoenix` - choose Phoenix (default: yes)
     * `--r2` / `--no-r2` - choose Cloudflare R2 storage (default: no)
     * `--proxy` / `--no-proxy` - choose kamal-proxy (default: yes with Phoenix)
+    * `--host HOST` - public DNS hostname (default: <app-slug>.tamayotchi.com);
+      independent of the app name, GoatCounter collector, and storage identities
     * `--secrets` / `--no-secrets` - automatically create/save missing credentials
       in 1Password after configuration (default: yes)
     * `--yes` - accept defaults, including automatic credentials, without prompting
@@ -29,6 +31,7 @@ defmodule Mix.Tasks.Tamayotchi.New do
     phoenix: :boolean,
     r2: :boolean,
     proxy: :boolean,
+    host: :string,
     secrets: :boolean,
     yes: :boolean
   ]
@@ -44,6 +47,7 @@ defmodule Mix.Tasks.Tamayotchi.New do
     phoenix? = resolve_boolean(options, :phoenix, "Include Phoenix?", true)
     r2? = resolve_boolean(options, :r2, "Include Cloudflare R2 storage?", false)
     proxy? = resolve_proxy(options, phoenix?)
+    host = resolve_host(options, phoenix?)
 
     announce_goatcounter_endpoint(app_name, phoenix?)
     target = Path.expand(app_name)
@@ -55,7 +59,7 @@ defmodule Mix.Tasks.Tamayotchi.New do
     generate_project!(target, phoenix?)
     install_stack!(target)
     init_git!(target)
-    configure_stack!(target, phoenix?, r2?, proxy?, Keyword.get(options, :secrets, true))
+    configure_stack!(target, phoenix?, r2?, proxy?, Keyword.get(options, :secrets, true), host)
 
     Mix.shell().info([
       :green,
@@ -130,6 +134,17 @@ defmodule Mix.Tasks.Tamayotchi.New do
     false
   end
 
+  defp resolve_host(options, phoenix?) do
+    if host = options[:host] do
+      unless phoenix?, do: Mix.raise("--host requires Phoenix")
+
+      case New.validate_host(host) do
+        :ok -> host
+        {:error, reason} -> Mix.raise(reason)
+      end
+    end
+  end
+
   defp generate_project!(target, true) do
     New.run_command!("mix", ["phx.new", target, "--no-install", "--database", "sqlite3"])
   end
@@ -155,8 +170,8 @@ defmodule Mix.Tasks.Tamayotchi.New do
     New.run_command!("mix", ["deps.get"], cd: target)
   end
 
-  defp configure_stack!(target, phoenix?, r2?, proxy?, secrets?) do
-    arguments = New.setup_arguments(phoenix?, r2?, proxy?, secrets?)
+  defp configure_stack!(target, phoenix?, r2?, proxy?, secrets?, host) do
+    arguments = New.setup_arguments(phoenix?, r2?, proxy?, secrets?, host)
 
     New.run_command!("mix", arguments, cd: target)
     New.run_command!("mix", ["deps.get"], cd: target)

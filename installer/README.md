@@ -21,6 +21,13 @@ mix tamayotchi.new my_app --r2 --yes
 mix tamayotchi.new my_app --no-r2 --yes
 ```
 
+Use `--host track.tamayotchi.com` to choose the public website address independently
+of the project name. It sets only Phoenix's `PHX_HOST` and Kamal's proxy host when
+enabled. Existing GoatCounter settings and its collector stay unchanged. It does
+not rename services, volumes, buckets, or 1Password references. Later, run
+`mix tamayotchi.setup --host another.example.com --yes` inside the same project.
+The choice persists across sync; DNS/TLS and deployment remain operator actions.
+
 The generated app owns the storage behaviour and adapters, so another backend
 such as S3 can be configured later without changing callers.
 

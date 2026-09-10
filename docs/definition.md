@@ -309,8 +309,9 @@ The latest Tamagym deployment is the reference for:
 - the shared server, registry owner, architecture, and 1Password location
 
 Application-specific values such as the service, image name, hostname, release
-paths, storage volume, and 1Password item are derived from the application name.
-Tamagym-only media and AI configuration is not copied.
+paths, storage volume, and 1Password item default from the application name.
+The public hostname alone can be overridden with `--host`, without changing those
+identities. Tamagym-only media and AI configuration is not copied.
 
 ## Feature: Phoenix and GoatCounter
 
@@ -354,8 +355,8 @@ should be grouped under one logical GoatCounter path.
 
 Managed generated files carry a Tamayotchi marker. Sync may update marked files
 but refuses to overwrite an unmarked, pre-existing integration. The manifest
-records only that Phoenix is managed; the GoatCounter endpoint is always derived
-from the manifest application name.
+records that Phoenix is managed and optionally its public `host`; the GoatCounter
+collector endpoint is always derived from the manifest application name.
 
 ### Automatic hosted GoatCounter site creation
 
@@ -380,6 +381,32 @@ Req transport is bounded, TLS-verified, paced for the hosted rate limit, and nev
 retries or redirects. Only hosted HTTPS main-site origins are accepted. GoatCounter
 codes must be unreserved, 2–50-character labels; conflicts require manual action.
 API schema changes fail closed rather than guessing ownership or permissions.
+
+### Public hostname independent of application identity
+
+`tamayotchi.new` and `tamayotchi.setup` accept `--host track.tamayotchi.com` for
+Phoenix. It is a lowercase literal DNS name, not a URL, port, wildcard, or SSH
+alias. Save it in `features: [phoenix: [host: "track.tamayotchi.com"], ...]` without
+changing the manifest app. Older `phoenix: []` manifests remain valid and preserve
+app-owned host choices. Omitted flags retain an existing override.
+
+Setup/sync patch only the literal deployment `env.clear.PHX_HOST` and the existing
+root `proxy.host`; without a proxy, only `PHX_HOST` changes. Standard Phoenix
+runtime config already consumes that environment value. Preserve quotes, comments,
+TLS choices, SSH destinations, service/image names, volumes, DB paths, buckets,
+backup prefixes, and secret references. Manage a conservative literal block-style
+YAML subset, not evaluated YAML/ERB: duplicate keys, aliases/merges, flow collections,
+escaped double-quoted strings, hidden role/Docker/secret overrides, and multi-host
+layouts conflict instead of being re-rendered. Opaque single-quoted values and
+comments are preserved. Doctor checks local agreement with the saved host. The
+manifest rejects duplicate top-level/feature keys. Setup/install/sync fail nonzero
+on reported issues or write failures; normal declined confirmations remain unchanged.
+No DNS, TLS, external routing, or deployment occurs.
+
+The public-host option affects Phoenix/Kamal only. It never changes an existing
+GoatCounter site's code, linking URL, settings, statistics, or creation checkpoint.
+The collector remains derived from the stable application name. Normal missing-site
+provisioning is unchanged; no update-site API or Update sites permission is needed.
 
 ## Feature: Oban
 
@@ -558,7 +585,8 @@ reviewing a migration if needed. Doctor requires Kamal whenever Phoenix is manag
 Turning off Phoenix management preserves existing deployment files, services,
 schedules, and credentials for manual review rather than uninstalling them.
 
-The public `PHX_HOST` remains `<app-slug>.tamayotchi.com` with or without proxy;
+The public `PHX_HOST` defaults to `<app-slug>.tamayotchi.com` with or without proxy,
+with an optional independent `--host` override;
 an SSH alias need not resolve in browsers. The alias is address indirection,
 not a security boundary: this does not install the reference app's Cloudflare
 Tunnel, loopback-only proxy binding, or a firewall policy.

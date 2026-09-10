@@ -11,6 +11,7 @@ defmodule TamayotchiStack.Doctor do
     app_name = Mix.Project.config()[:app]
     managed_phoenix? = phoenix_enabled?(manifest)
     {managed_kamal?, expected_kamal_proxy?} = kamal_configuration(manifest)
+    host = public_host(manifest)
 
     %{
       app: app_name,
@@ -26,6 +27,8 @@ defmodule TamayotchiStack.Doctor do
       kamal: Project.kamal_on_disk?(),
       kamal_proxy: Project.kamal_proxy_on_disk?(),
       expected_kamal_proxy: expected_kamal_proxy?,
+      public_host: host,
+      public_host_matches: public_host_matches?(host),
       goatcounter: Project.goatcounter_on_disk?(),
       goatcounter_endpoint: Project.goatcounter_endpoint_on_disk(),
       expected_goatcounter_endpoint:
@@ -35,7 +38,7 @@ defmodule TamayotchiStack.Doctor do
 
   @spec healthy?(map()) :: boolean()
   def healthy?(report) do
-    report.manifest == :ok and
+    report.manifest == :ok and Map.get(report, :public_host_matches, true) and
       (not Map.get(report, :managed_r2, false) or Map.get(report, :r2, false)) and
       (not (report.managed_phoenix or Map.get(report, :managed_backups, false)) or
          Map.get(report, :backups, false)) and
@@ -63,7 +66,30 @@ defmodule TamayotchiStack.Doctor do
       SQLite backups: #{feature_status(report.backups, report.managed_backups)} (included with Phoenix; verify scheduling and backup freshness separately)
       Kamal:        #{feature_status(report.kamal, report.managed_kamal)}
       Kamal proxy:  #{proxy_status(report)}
+      Public host:  #{public_host_status(report)}
     """
+  end
+
+  defp public_host_status(report) do
+    host = Map.get(report, :public_host) || "app-owned (no override)"
+
+    if Map.get(report, :public_host_matches, true),
+      do: host,
+      else: host <> " (deployment does not match; run sync and resolve conflicts)"
+  end
+
+  defp public_host({:ok, manifest}), do: TamayotchiStack.PublicHost.from_manifest(manifest)
+  defp public_host(_), do: nil
+
+  defp public_host_matches?(nil), do: true
+
+  defp public_host_matches?(host) do
+    with {:ok, deployment} <- File.read("config/deploy.yml"),
+         {:ok, ^deployment} <- TamayotchiStack.PublicHost.patch(deployment, host) do
+      true
+    else
+      _ -> false
+    end
   end
 
   defp manifest_status({:ok, _manifest}), do: :ok

@@ -119,8 +119,13 @@ export LITESTREAM_SECRET_ACCESS_KEY=synthetic-backup-secret
 
 cd "$workspace"
 # No --secrets flag and no separate manual secrets command: generation does it.
-mix tamayotchi.new credential_app --yes
+mix tamayotchi.new credential_app --host credential.public.example --no-proxy --yes
 cd credential_app
+rg -q 'PHX_HOST: credential.public.example' config/deploy.yml
+if rg -q '^proxy:' config/deploy.yml; then
+  echo "No-proxy generation unexpectedly enabled a proxy" >&2
+  exit 1
+fi
 mix compile --warnings-as-errors
 mix test
 
@@ -175,6 +180,78 @@ for path in pathlib.Path('.').rglob('*'):
     if path.is_file() and not any(p in {'_build', 'deps', '.git'} for p in path.parts):
         assert all(v.encode() not in path.read_bytes() for v in values.values()), str(path)
 PY
+
+# Public-host changes affect Phoenix/Kamal only. File-only setup never contacts
+# providers; normal credential reruns leave all existing GoatCounter settings alone.
+cp config/deploy.yml "$workspace/before-host.yml"
+cp .kamal/secrets "$workspace/before-host-secrets"
+cp "$TSTACK_TEST_OP_STATE" "$workspace/before-host.json"
+mix tamayotchi.setup --host track.tamayotchi.com --no-secrets --yes
+cmp "$TSTACK_TEST_OP_STATE" "$workspace/before-host.json"
+mix tamayotchi.sync --yes
+cmp "$TSTACK_TEST_OP_STATE" "$workspace/before-host.json"
+python3 - "$workspace/before-host.yml" <<'PY'
+import pathlib, sys
+before = pathlib.Path(sys.argv[1]).read_text()
+assert pathlib.Path('config/deploy.yml').read_text() == before.replace('credential-app.tamayotchi.com', 'track.tamayotchi.com')
+assert 'https://credential-app.goatcounter.com/count' in pathlib.Path('assets/js/goatcounter.js').read_text()
+PY
+mix tamayotchi.secrets --yes
+mix tamayotchi.setup --host better.example.com --yes
+mix tamayotchi.secrets --yes
+cmp .kamal/secrets "$workspace/before-host-secrets"
+python3 - "$workspace/before-host.json" "$TSTACK_TEST_OP_STATE" <<'PY'
+import json, pathlib, sys
+before, after = [json.loads(pathlib.Path(p).read_text()) for p in sys.argv[1:]]
+assert before['item'] == after['item']
+assert before['writes'] == after['writes'] == 2
+assert before['goat_writes'] == after['goat_writes'] == 1
+assert before['goat_sites'] == after['goat_sites']
+assert len(after['goat_sites']) == 2
+PY
+cp "$TSTACK_TEST_OP_STATE" "$workspace/after-host.json"
+mix tamayotchi.sync --yes
+mix tamayotchi.doctor --check --format json
+cmp "$TSTACK_TEST_OP_STATE" "$workspace/after-host.json"
+if mix tamayotchi.setup --host https://invalid.example.com --yes > "$workspace/invalid-host.log" 2>&1; then
+  echo "Setup accepted an invalid host" >&2
+  exit 1
+fi
+cmp "$TSTACK_TEST_OP_STATE" "$workspace/after-host.json"
+# Doctor must detect host drift without provider access; sync repairs only the
+# managed scalars and is idempotent afterward.
+cp config/deploy.yml "$workspace/host-config.yml"
+python3 - <<'PY'
+import pathlib
+path = pathlib.Path('config/deploy.yml')
+path.write_text(path.read_text().replace('better.example.com', 'drift.example.com'))
+PY
+if mix tamayotchi.doctor --check --format json > "$workspace/host-drift.json"; then
+  echo "Doctor accepted a deployment host that differs from the manifest" >&2
+  exit 1
+fi
+rg -q '"public_host_matches": false' "$workspace/host-drift.json"
+cmp "$TSTACK_TEST_OP_STATE" "$workspace/after-host.json"
+mix tamayotchi.sync --yes
+cmp config/deploy.yml "$workspace/host-config.yml"
+cmp "$TSTACK_TEST_OP_STATE" "$workspace/after-host.json"
+# A conflicted deployment must not run a queued provider task or alter files.
+printf '\nenv: {}\n' >> config/deploy.yml
+cp config/deploy.yml "$workspace/conflicted-host.yml"
+cp .tamayotchi.exs "$workspace/host-manifest.exs"
+# All public Igniter task entrypoints must fail nonzero on conflicts, not just
+# print an issue and let an automation script continue as though setup succeeded.
+for task in tamayotchi.setup tamayotchi_stack.install tamayotchi.sync; do
+  if mix "$task" --yes > "$workspace/conflicted-host.log" 2>&1; then
+    echo "$task returned success for a conflicted host change" >&2
+    exit 1
+  fi
+  rg -q 'Cannot safely update the public host' "$workspace/conflicted-host.log"
+  cmp config/deploy.yml "$workspace/conflicted-host.yml"
+  cmp .tamayotchi.exs "$workspace/host-manifest.exs"
+  cmp "$TSTACK_TEST_OP_STATE" "$workspace/after-host.json"
+done
+cp "$workspace/host-config.yml" config/deploy.yml
 
 # Plain Mix applications have neither Kamal nor deployment credentials.
 cd "$workspace"

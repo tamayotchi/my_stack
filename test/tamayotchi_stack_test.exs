@@ -66,6 +66,120 @@ defmodule TamayotchiStackTest do
     assert manifest[:features][:kamal] == [proxy: true]
   end
 
+  test "public host changes survive setup and sync without renaming infrastructure or GoatCounter" do
+    for proxy? <- [true, false] do
+      initial = phoenix_project() |> Setup.configure(phoenix: true, r2: true, kamal_proxy: proxy?)
+      initial_deploy = content(initial, "config/deploy.yml")
+
+      changed =
+        initial
+        |> materialized_project()
+        |> Setup.configure(phoenix: true, r2: true, host: "track.tamayotchi.com")
+
+      assert Igniter.prepare_for_write(changed).issues == []
+
+      assert content(changed, "config/deploy.yml") ==
+               String.replace(initial_deploy, "sample.tamayotchi.com", "track.tamayotchi.com")
+
+      for path <- [
+            ".kamal/secrets",
+            "Dockerfile",
+            "assets/js/goatcounter.js",
+            "lib/sample/release.ex",
+            "rel/overlays/etc/litestream.yml"
+          ] do
+        assert content(changed, path) == content(initial, path)
+      end
+
+      assert {:ok, manifest} = Manifest.parse(content(changed, ".tamayotchi.exs"))
+      assert manifest[:features][:phoenix] == [host: "track.tamayotchi.com"]
+      refute Igniter.changed?(changed |> materialized_project() |> Sync.run())
+
+      refute Igniter.changed?(
+               changed
+               |> materialized_project()
+               |> Setup.configure(phoenix: true, r2: true)
+             )
+
+      renamed_again =
+        changed
+        |> materialized_project()
+        |> Setup.configure(phoenix: true, r2: true, host: "better.example.com")
+
+      assert Igniter.prepare_for_write(renamed_again).issues == []
+
+      assert content(renamed_again, "config/deploy.yml") ==
+               String.replace(initial_deploy, "sample.tamayotchi.com", "better.example.com")
+    end
+  end
+
+  test "new Phoenix projects accept a public host while invalid and non-Phoenix hosts change nothing" do
+    fresh = phoenix_project() |> Setup.configure(phoenix: true, host: "track.tamayotchi.com")
+    assert Igniter.prepare_for_write(fresh).issues == []
+    assert content(fresh, "config/deploy.yml") =~ "PHX_HOST: track.tamayotchi.com"
+
+    for options <- [
+          [phoenix: false, host: "track.tamayotchi.com"],
+          [phoenix: true, host: "https://track.tamayotchi.com"]
+        ] do
+      invalid = phoenix_project() |> Setup.configure(options)
+      assert invalid.issues != []
+      refute Igniter.changed?(invalid)
+    end
+
+    assert_raise Mix.Error, ~r/--host requires Phoenix/, fn ->
+      SetupOptions.resolve(phoenix_project(),
+        phoenix: false,
+        host: "track.tamayotchi.com",
+        yes: true
+      )
+    end
+
+    assert SetupOptions.resolve(phoenix_project(), host: "track.tamayotchi.com", yes: true)[:host] ==
+             "track.tamayotchi.com"
+  end
+
+  test "public host management preserves compatible custom deployment settings and refuses conflicts" do
+    initial = phoenix_project() |> Setup.configure(phoenix: true)
+
+    customized =
+      content(initial, "config/deploy.yml")
+      |> String.replace("home-server", "192.0.2.10")
+      |> String.replace("ssl: false", "ssl: true # custom TLS")
+      |> String.replace("ghcr.io", "registry.example.com")
+
+    custom =
+      Igniter.update_file(
+        initial,
+        "config/deploy.yml",
+        &Rewrite.Source.update(&1, :content, customized)
+      )
+
+    configured =
+      custom
+      |> materialized_project()
+      |> Setup.configure(phoenix: true, host: "track.tamayotchi.com")
+
+    assert Igniter.prepare_for_write(configured).issues == []
+
+    assert content(configured, "config/deploy.yml") ==
+             String.replace(customized, "sample.tamayotchi.com", "track.tamayotchi.com")
+
+    conflicting =
+      Igniter.update_file(
+        initial,
+        "config/deploy.yml",
+        &Rewrite.Source.update(&1, :content, customized <> "env: {}\n")
+      )
+
+    result =
+      conflicting
+      |> materialized_project()
+      |> Setup.configure(phoenix: true, host: "track.tamayotchi.com")
+
+    assert Igniter.prepare_for_write(result).issues != []
+  end
+
   test "Kamal release paths follow module names rather than numeric OTP app segments" do
     mix_exs = """
     defmodule Sample123.MixProject do
@@ -462,6 +576,7 @@ defmodule TamayotchiStackTest do
     }
 
     assert Doctor.healthy?(report)
+    refute Doctor.healthy?(Map.put(report, :public_host_matches, false))
     refute Doctor.healthy?(%{report | sqlite: false})
     refute Doctor.healthy?(%{report | backups: false})
     refute Doctor.healthy?(%{report | managed_backups: false, backups: false})
@@ -485,6 +600,33 @@ defmodule TamayotchiStackTest do
              Manifest.parse("[schema: 1, app: :sample, features: [phoenix: false]]\n")
 
     assert reason =~ "Phoenix configuration"
+  end
+
+  test "manifest host state must be valid and unambiguous" do
+    for config <- [
+          [host: ""],
+          [host: nil],
+          [host: "https://track.example.com"],
+          [host: "track.example.com", host: "other.example.com"],
+          [host: "track.example.com", extra: true]
+        ] do
+      assert {:error, _} =
+               Manifest.parse(inspect(schema: 1, app: :sample, features: [phoenix: config]))
+    end
+
+    for manifest <- [
+          [schema: 1, app: :sample, app: :other, features: [phoenix: []]],
+          [
+            schema: 1,
+            app: :sample,
+            features: [phoenix: []],
+            features: [phoenix: [host: "track.example.com"]]
+          ],
+          [schema: 1, app: :sample, features: [phoenix: [], phoenix: [host: "track.example.com"]]]
+        ] do
+      assert {:error, message} = Manifest.parse(inspect(manifest))
+      assert message =~ "duplicate keys"
+    end
   end
 
   defp phoenix_project(extra_files \\ %{}) do

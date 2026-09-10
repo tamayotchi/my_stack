@@ -65,6 +65,22 @@ defmodule TamayotchiStack.SecretsGoatCounterHttpTest do
              Http.request(:put, @origin, "/api/v0/sites", @token, payload, transport)
   end
 
+  test "existing GoatCounter sites cannot be updated or deleted by the transport" do
+    for method <- [:patch, :post, :delete] do
+      assert {:error, _} =
+               Http.request(
+                 method,
+                 @origin,
+                 "/api/v0/sites/2",
+                 @token,
+                 %{link_domain: "https://track.tamayotchi.com"},
+                 fn _ ->
+                   flunk("site modification reached transport")
+                 end
+               )
+    end
+  end
+
   test "rejects error envelopes and oversized responses without revealing provider output" do
     for response <- [
           {:ok, %{status: 401, body: @token}},
